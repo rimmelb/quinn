@@ -298,6 +298,20 @@ impl StreamsState {
         Ok(self.add_read_credits(new_bytes))
     }
 
+    fn normalize_pending(&mut self) {
+        // Gyors út: ha nincs pending, nincs teendő
+        if self.pending.is_empty() { return; }
+
+        // Kigyűjtjük a jelenlegi pending streameket, majd újratöltjük aktuális priority-vel
+        let ids: Vec<_> = self.pending.iter().map(|p| p.id).collect();
+        self.pending.clear();
+        for id in ids {
+            if let Some(Some(s)) = self.send.get(&id) {
+                self.pending.push_pending(id, s.priority, s.deadline);
+            }
+        }
+    }
+
     /// Process incoming RESET_STREAM frame
     ///
     /// If successful, returns whether a `MAX_DATA` frame needs to be transmitted
@@ -548,6 +562,8 @@ impl StreamsState {
         max_buf_size: usize,
         fair: bool,
     ) -> StreamMetaVec {
+        // Normalizáljuk a pending listát, ha szükséges
+        self.normalize_pending();
         let mut stream_frames = StreamMetaVec::new();
         while buf.len() + frame::Stream::SIZE_BOUND < max_buf_size {
             if max_buf_size

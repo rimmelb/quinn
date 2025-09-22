@@ -449,6 +449,11 @@ impl PendingStreamsQueue {
         self.streams.clear();
     }
 
+    // NEW: needed by StreamsState::normalize_pending()
+    fn is_empty(&self) -> bool {
+        self.next.is_none() && self.streams.is_empty()
+    }
+
     fn iter(&self) -> impl Iterator<Item = &PendingStream> {
         self.next.iter().chain(self.streams.iter())
     }
