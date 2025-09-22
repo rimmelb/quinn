@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use thiserror::Error;
+use std::time::Instant;
 
 use crate::{VarInt, connection::send_buffer::SendBuffer, frame};
 
@@ -9,6 +10,12 @@ pub(super) struct Send {
     pub(super) state: SendState,
     pub(super) pending: SendBuffer,
     pub(super) priority: i32,
+    // Deadline alapú ütemezéshez opcionális abszolút határidő
+    pub(super) deadline: Option<Instant>,
+    // Slack (ms) – utolsó számított érték (diagnosztika / requeue logika)
+    pub(super) slack_ms: Option<f64>,
+    // Priority frissült-e úgy, hogy a pending queue entry-t frissíteni kell
+    pub(super) priority_dirty: bool,
     /// Whether a frame containing a FIN bit must be transmitted, even if we don't have any new data
     pub(super) fin_pending: bool,
     /// Whether this stream is in the `connection_blocked` list of `Streams`
@@ -24,6 +31,9 @@ impl Send {
             state: SendState::Ready,
             pending: SendBuffer::new(),
             priority: 0,
+            deadline: None,
+            slack_ms: None,
+            priority_dirty: false,
             fin_pending: false,
             connection_blocked: false,
             stop_reason: None,
@@ -141,6 +151,36 @@ impl Send {
     pub(super) fn is_writable(&self) -> bool {
         matches!(self.state, SendState::Ready)
     }
+
+    /// Belső API: stream deadline beállítása
+    pub(super) fn set_deadline(&mut self, deadline: Instant) {
+        self.deadline = Some(deadline);
+        // A prioritást csak akkor frissítjük automatikusan, ha van slack számítás felsőbb rétegen.
+        self.priority_dirty = true;
+    }
+
+    /// Belső API: slack alapú prioritás beállítása ms-ben
+    pub(super) fn set_slack_ms(&mut self, slack_ms: f64) {
+        self.slack_ms = Some(slack_ms);
+        let new_prio = slack_to_priority(slack_ms);
+        if new_prio != self.priority {
+            self.priority = new_prio;
+            self.priority_dirty = true;
+        }
+    }
+}
+
+/// Alkalmazásban korábban használt threshold mapping integrálása.
+#[inline]
+pub(super) fn slack_to_priority(slack_ms: f64) -> i32 {
+    if !slack_ms.is_finite() { return 127; }
+    if slack_ms <= 0.0 { return 0; }
+    if slack_ms < 50.0 { return 8; }
+    if slack_ms < 100.0 { return 16; }
+    if slack_ms < 250.0 { return 32; }
+    if slack_ms < 500.0 { return 64; }
+    if slack_ms < 1000.0 { return 96; }
+    127
 }
 
 /// A [`BytesSource`] implementation for `&'a mut [Bytes]`

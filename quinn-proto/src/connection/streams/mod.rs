@@ -1,6 +1,7 @@
 use std::{
     collections::{BinaryHeap, hash_map},
     io,
+    time::Instant,
 };
 
 use bytes::Bytes;
@@ -269,7 +270,7 @@ impl<'a> SendStream<'a> {
         self.state.unacked_data += written.bytes as u64;
         trace!(stream = %self.id, "wrote {} bytes", written.bytes);
         if !was_pending {
-            self.state.pending.push_pending(self.id, stream.priority);
+            self.state.pending.push_pending(self.id, stream.priority, stream.deadline);
         }
         Ok(written)
     }
@@ -300,7 +301,7 @@ impl<'a> SendStream<'a> {
         let was_pending = stream.is_pending();
         stream.finish()?;
         if !was_pending {
-            self.state.pending.push_pending(self.id, stream.priority);
+            self.state.pending.push_pending(self.id, stream.priority, stream.deadline);
         }
 
         Ok(())
@@ -365,6 +366,34 @@ impl<'a> SendStream<'a> {
 
         Ok(stream.as_ref().map(|s| s.priority).unwrap_or_default())
     }
+
+    /// Set an absolute deadline hint for transport scheduling of this stream
+    pub fn set_deadline(&mut self, deadline: Instant) -> Result<(), ClosedStream> {
+        let max_send_data = self.state.max_send_data(self.id);
+        let stream = self
+            .state
+            .send
+            .get_mut(&self.id)
+            .map(get_or_insert_send(max_send_data))
+            .ok_or(ClosedStream { _private: () })?;
+        stream.set_deadline(deadline);
+        if stream.is_pending() { self.state.pending.push_pending(self.id, stream.priority, stream.deadline); }
+        Ok(())
+    }
+
+    /// Set slack (milliseconds) relative urgency; mapped to priority internally
+    pub fn set_slack_ms(&mut self, slack_ms: f64) -> Result<(), ClosedStream> {
+        let max_send_data = self.state.max_send_data(self.id);
+        let stream = self
+            .state
+            .send
+            .get_mut(&self.id)
+            .map(get_or_insert_send(max_send_data))
+            .ok_or(ClosedStream { _private: () })?;
+        stream.set_slack_ms(slack_ms);
+        if stream.is_pending() { self.state.pending.push_pending(self.id, stream.priority, stream.deadline); }
+        Ok(())
+    }
 }
 
 /// A queue of streams with pending outgoing data, sorted by priority
@@ -394,12 +423,13 @@ impl PendingStreamsQueue {
         self.next = Some(PendingStream {
             priority,
             recency: self.recency, // the value here doesn't really matter
+            deadline: None,
             id,
         });
     }
 
     /// Push a pending stream ID with the given priority, queued after any already-queued streams for the priority
-    fn push_pending(&mut self, id: StreamId, priority: i32) {
+    fn push_pending(&mut self, id: StreamId, priority: i32, deadline: Option<Instant>) {
         // Note that in the case where fairness is disabled, if we have a reinserted stream we don't
         // bump it even if priority > next.priority. In order to minimize fragmentation we
         // always try to complete a stream once part of it has been written.
@@ -409,16 +439,10 @@ impl PendingStreamsQueue {
         // This is enough to implement round-robin scheduling for streams that are still pending even after being handled,
         // as in that case they are removed from the `BinaryHeap`, handled, and then immediately reinserted.
         self.recency -= 1;
-        self.streams.push(PendingStream {
-            priority,
-            recency: self.recency,
-            id,
-        });
+        self.streams.push(PendingStream { priority, recency: self.recency, deadline, id });
     }
 
-    fn pop(&mut self) -> Option<PendingStream> {
-        self.next.take().or_else(|| self.streams.pop())
-    }
+    fn pop(&mut self) -> Option<PendingStream> { self.next.take().or_else(|| self.streams.pop()) }
 
     fn clear(&mut self) {
         self.next = None;
@@ -436,12 +460,14 @@ impl PendingStreamsQueue {
 }
 
 /// The [`StreamId`] of a stream with pending data queued, ordered by its priority and recency
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq)]
 struct PendingStream {
     /// The priority of the stream
     // Note that this field should be kept above the `recency` field, in order for the `Ord` derive to be correct
     // (See https://doc.rust-lang.org/stable/std/cmp/trait.Ord.html#derivable)
     priority: i32,
+    /// Opcionális deadline korábbi sorbarendezéshez (alacsonyabb = előrébb)
+    deadline: Option<Instant>,
     /// A tie-breaker for streams of the same priority, used to improve fairness by implementing round-robin scheduling:
     /// Larger values are prioritized, so it is initialised to `u64::MAX`, and when a stream writes data, we know
     /// that it currently has the highest recency value, so it is deprioritized by setting its recency to 1 less than the
@@ -453,6 +479,37 @@ struct PendingStream {
     // the `priority` and `recency` fields, so that it does not interfere with the behaviour of the `Ord` derive
     id: StreamId,
 }
+
+use std::cmp::Ordering;
+impl Ord for PendingStream {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // priority: nagyobb érték előrébb (BinaryHeap max-heap)
+        match self.priority.cmp(&other.priority) {
+            Ordering::Equal => {
+                // Deadline: korábbi (kisebb Instant) legyen előrébb -> treat earlier as Greater
+                match (self.deadline, other.deadline) {
+                    (Some(a), Some(b)) => {
+                        match a.cmp(&b) {
+                            Ordering::Less => return Ordering::Greater,
+                            Ordering::Greater => return Ordering::Less,
+                            Ordering::Equal => {}
+                        }
+                    },
+                    (Some(_), None) => return Ordering::Greater, // prefer streams with deadlines
+                    (None, Some(_)) => return Ordering::Less,
+                    (None, None) => {}
+                }
+                // recency: nagyobb recency előrébb (eredeti logika)
+                match self.recency.cmp(&other.recency) {
+                    Ordering::Equal => self.id.cmp(&other.id),
+                    x => x,
+                }
+            }
+            x => x,
+        }
+    }
+}
+impl PartialOrd for PendingStream { fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) } }
 
 /// Application events about streams
 #[derive(Debug, PartialEq, Eq)]
