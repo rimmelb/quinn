@@ -97,6 +97,65 @@ future runs.
 </details>
 <p></p>
 
+## Deadline & Slack-alapú Stream Ütemezés (kiterjesztés)
+
+Ez a fork kiegészült két új, kísérleti API-val a küldési sorrend finomabb, késleltetés-érzékeny befolyásolására:
+
+- `SendStream::set_deadline(Instant)` – abszolút határidő hint a transzport számára.
+- `SendStream::set_slack_ms(f64)` – relatív "slack" (ms) megadása; belsőleg diszkrét QUIC priority értékké képeződik le.
+
+### Motiváció
+Alacsony késleltetésű / időkritikus média vagy interaktív objektumok esetén a hagyományos statikus prioritás nem elég rugalmas. A slack a (deadline - becsült kiszolgálási idő) közelítője; minél kisebb, annál sürgősebb. Negatív vagy 0 slack => azonnali továbbítás (legmagasabb prioritás).
+
+### Priority Mapping (belső)
+A slack→priority leképezés lépcsős (0 = legmagasabb):
+
+```
+slack <= 0 ms   => 0
+< 50 ms         => 8
+< 100 ms        => 16
+< 250 ms        => 32
+< 500 ms        => 64
+< 1000 ms       => 96
+>= 1000 ms vagy NaN/∞ => 127
+```
+
+### Használati példa
+```rust
+use quinn::SendStream;
+use std::time::{Instant, Duration};
+
+async fn send_time_critical(mut s: SendStream, payload: &[u8]) -> anyhow::Result<()> {
+  // 150 ms-en belüli kézbesítési cél
+  let deadline = Instant::now() + Duration::from_millis(150);
+  s.set_deadline(deadline)?;
+
+  // Becsült feldolgozási / átvitel idő után számolt slack (példa: 40ms)
+  let slack_ms = 40.0; // külső becslésből
+  s.set_slack_ms(slack_ms)?; // priority frissül (itt: 8)
+
+  s.write_all(payload).await?;
+  s.finish()?;
+  Ok(())
+}
+```
+
+### Viselkedés és korlátok
+- A módosítás transport-szintű queue rendezést egészíti ki: (priority, deadline, recency).
+- Ugyanazon priority mellett a korábbi deadline előrébb kerül.
+- Ha egy stream pending adatának priority-ja vagy deadline-ja futás közben változik, a belső queue újrarendezi (dirty flag mechanizmus).
+- A QUIC specifikáció nem definiál deadline fogalmat; ez teljesen lokális heurisztika.
+
+### Javasolt használat
+1. Minden objektum / frame előtt (vagy ablakonként) frissítsd a slack-et.
+2. A deadline-t ritkábban állítsd (pl. objektum-csoportra), így csökkentve a priority churn-t.
+3. Ha nincs releváns időkorlát: ne hívd a metódusokat (alapértelmezett priority = 0 / FIFO fairness + recency).
+
+### Visszafelé kompatibilitás
+Az új API-k opcionálisak; meglévő kód változtatás nélkül működik. Upstream felé PR esetén érdemes feature flag mögé rejteni (`deadline_priority`), de ez a fork jelenleg mindig engedélyezi.
+
+---
+
 ## Contribution
 
 All feedback welcome. Feel free to file bugs, requests for documentation and

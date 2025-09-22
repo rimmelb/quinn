@@ -2,6 +2,7 @@ use std::{
     collections::{VecDeque, hash_map},
     convert::TryFrom,
     mem,
+    time::Instant,
 };
 
 use bytes::BufMut;
@@ -558,9 +559,27 @@ impl StreamsState {
 
             // Pop the stream of the highest priority that currently has pending data
             // If the stream still has some pending data left after writing, it will be reinserted, otherwise not
-            let Some(stream) = self.pending.pop() else {
+            let Some(mut stream) = self.pending.pop() else {
                 break;
             };
+
+            // Ellenőrizzük, hogy a stream priority-ja megváltozott-e időközben (dirty flag)
+            let mut requeue_priority: Option<i32> = None;
+            let mut new_deadline: Option<Instant> = None;
+            {
+                if let Some(entry) = self.send.get(&stream.id) {
+                    if let Some(send) = entry.as_ref() {
+                        if send.priority_dirty { requeue_priority = Some(send.priority); }
+                        if stream.deadline.is_none() { new_deadline = send.deadline; }
+                    }
+                }
+            }
+            if let Some(p) = requeue_priority {
+                if let Some(entry_mut) = self.send.get_mut(&stream.id) { if let Some(send_mut) = entry_mut.as_mut() { send_mut.priority_dirty = false; } }
+                self.pending.push_pending(stream.id, p, stream.deadline);
+                continue;
+            }
+            if stream.deadline.is_none() && new_deadline.is_some() { stream.deadline = new_deadline; }
 
             let id = stream.id;
 
@@ -593,7 +612,7 @@ impl StreamsState {
                 // so that the other streams will have a chance to write data
                 // before we touch this stream again.
                 if fair {
-                    self.pending.push_pending(id, stream.priority);
+                    self.pending.push_pending(id, stream.priority, stream.deadline);
                 } else {
                     self.pending.reinsert_pending(id, stream.priority);
                 }
@@ -676,7 +695,7 @@ impl StreamsState {
             Some(x) => x,
         };
         if !stream.is_pending() {
-            self.pending.push_pending(frame.id, stream.priority);
+            self.pending.push_pending(frame.id, stream.priority, stream.deadline);
         }
         stream.fin_pending |= frame.fin;
         stream.pending.retransmit(frame.offsets);
@@ -696,7 +715,7 @@ impl StreamsState {
                     continue;
                 }
                 if !stream.is_pending() {
-                    self.pending.push_pending(id, stream.priority);
+                    self.pending.push_pending(id, stream.priority, stream.deadline);
                 }
                 stream.pending.retransmit_all_for_0rtt();
             }
