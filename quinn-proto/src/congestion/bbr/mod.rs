@@ -97,7 +97,7 @@ impl Bbr {
             bw_at_last_round: 0,
             round_wo_bw_gain: 0,
             ack_aggregation: AckAggregationState::default(),
-            random_number_generator: rand::rngs::StdRng::from_os_rng(),
+            random_number_generator: rand::rngs::StdRng::from_os_rng()
         }
     }
 
@@ -299,6 +299,23 @@ impl Bbr {
         if self.pacing_rate < target_rate {
             self.pacing_rate = target_rate;
         }
+
+        if let Some(floor_bps) = Some(self.config.min_pacing_bps) {
+        if self.min_rtt.as_nanos() != 0 {
+            let win_bytes = self.window();
+            let rate_cwnd = ((win_bytes as u128 * 8_000_000u128)
+                / (self.min_rtt.as_micros().max(1) as u128)) as u64;
+
+            let loss_blocking = self.loss_state.has_losses() || self.recovery_state.in_recovery();
+            if !loss_blocking {
+                let desired = floor_bps;
+                let capped = desired.min(rate_cwnd.max(1));
+                if capped > self.pacing_rate {
+                    self.pacing_rate = capped;
+                }
+            }
+        }
+    }
     }
 
     fn calculate_cwnd(&mut self, bytes_acked: u64, excess_acked: u64) {
@@ -511,6 +528,7 @@ impl Controller for Bbr {
 #[derive(Debug, Clone)]
 pub struct BbrConfig {
     initial_window: u64,
+    min_pacing_bps: u64,
 }
 
 impl BbrConfig {
@@ -521,12 +539,17 @@ impl BbrConfig {
         self.initial_window = value;
         self
     }
+   
+    /// For testing purposes only. If set to a non-zero value, this will
+    /// enforce a minimum pacing rate in bits per second.
+    pub fn min_pacing_bps(&mut self, v: u64) -> &mut Self { self.min_pacing_bps = v; self }
 }
 
 impl Default for BbrConfig {
     fn default() -> Self {
         Self {
             initial_window: K_MAX_INITIAL_CONGESTION_WINDOW * BASE_DATAGRAM_SIZE,
+            min_pacing_bps: 0,
         }
     }
 }
