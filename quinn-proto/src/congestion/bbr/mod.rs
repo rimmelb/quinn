@@ -616,6 +616,7 @@ fn slack_to_priority(slack_ms: f64) -> i32 {
 pub struct BbrConfig {
     initial_window: u64,
     min_pacing_bps: u64,
+    deadline: Option<DeadlineConfig>
 }
 
 impl BbrConfig {
@@ -630,6 +631,31 @@ impl BbrConfig {
     /// For testing purposes only. If set to a non-zero value, this will
     /// enforce a minimum pacing rate in bits per second.
     pub fn min_pacing_bps(&mut self, v: u64) -> &mut Self { self.min_pacing_bps = v; self }
+
+    pub fn enable_deadline_scheduler(mut self, enabled: bool) -> Self {
+        let mut d = self.deadline.unwrap_or_default();
+        d.enabled = enabled;
+        self.deadline = Some(d);
+        self
+    }
+    pub fn guard_ms(mut self, ms: u64) -> Self {
+        let mut d = self.deadline.unwrap_or_default();
+        d.guard_ms = ms;
+        self.deadline = Some(d);
+        self
+    }
+    pub fn beta(mut self, beta: f64) -> Self {
+        let mut d = self.deadline.unwrap_or_default();
+        d.beta = beta;
+        self.deadline = Some(d);
+        self
+    }
+    pub fn default_mss(mut self, mss: u32) -> Self {
+        let mut d = self.deadline.unwrap_or_default();
+        d.default_mss = mss;
+        self.deadline = Some(d);
+        self
+    }
 }
 
 impl Default for BbrConfig {
@@ -637,6 +663,7 @@ impl Default for BbrConfig {
         Self {
             initial_window: K_MAX_INITIAL_CONGESTION_WINDOW * BASE_DATAGRAM_SIZE,
             min_pacing_bps: 0,
+            deadline: None
         }
     }
 }
