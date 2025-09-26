@@ -1757,9 +1757,17 @@ impl Connection {
                     self.orig_rem_cid,
                 );
                 self.remove_in_flight(&info);
-                for frame in info.stream_frames {
-                    self.streams.retransmit(frame);
+                if let Some(retransmits) = info.retransmits.get() {
+                    // Re-queue crypto frames
+                    for crypto_frame in &retransmits.crypto {
+                        self.spaces[pn_space].pending.crypto.push_back(crypto_frame.clone());
+                    }
                 }
+                // Handle stream frame retransmissions 
+                for stream_meta in &info.stream_frames {
+                    self.streams.retransmit(stream_meta.clone());
+                }
+                
                 self.spaces[pn_space].pending |= info.retransmits;
                 self.path.mtud.on_non_probe_lost(packet, info.size);
             }
@@ -1911,6 +1919,7 @@ impl Connection {
     ) {
         self.total_authed_packets += 1;
         self.reset_keep_alive(now);
+       
         self.reset_idle_timeout(now, space_id);
         self.permit_idle_reset = true;
         self.receiving_ecn |= ecn.is_some();
@@ -3755,6 +3764,30 @@ impl Connection {
             new_tokens.push(self.path.remote);
         }
     }
+
+    /// New: deadline-aware object admission
+    pub fn can_send_object(&self, 
+        object_size: u64, 
+        deadline: Option<Instant>,
+        now: Instant  // FIX: Add now parameter instead of self.timers.now()
+    ) -> bool {
+        let Some(deadline) = deadline else { return true; };
+        let rtt = self.path.rtt.get();
+        
+        self.path.congestion.can_admit_object(object_size, deadline, now, rtt)
+    }
+    
+    /// New: get priority suggestion for object
+    pub fn suggest_object_priority(&self, 
+        object_size: u64, 
+        deadline: Option<Instant>,
+        now: Instant  // FIX: Add now parameter instead of self.timers.now()
+    ) -> i32 {
+        let Some(deadline) = deadline else { return 0; };
+        let rtt = self.path.rtt.get();
+        
+        self.path.congestion.suggest_priority(object_size, deadline, now, rtt)
+    }
 }
 
 impl fmt::Debug for Connection {
@@ -4025,8 +4058,7 @@ const MIN_PACKET_SPACE: usize = MAX_HANDSHAKE_OR_0RTT_HEADER_SIZE + 32;
 /// Largest amount of space that could be occupied by a Handshake or 0-RTT packet's header
 ///
 /// Excludes packet-type-specific fields such as packet number or Initial token
-// https://www.rfc-editor.org/rfc/rfc9000.html#name-0-rtt: flags + version + dcid len + dcid +
-// scid len + scid + length + pn
+// https://www.rfc-editor.org/rfc/rfc9000.html#name-0-rtt: flags + version + dcid len + dcid + scid len + scid + length + pn
 const MAX_HANDSHAKE_OR_0RTT_HEADER_SIZE: usize =
     1 + 4 + 1 + MAX_CID_SIZE + 1 + MAX_CID_SIZE + VarInt::from_u32(u16::MAX as u32).size() + 4;
 

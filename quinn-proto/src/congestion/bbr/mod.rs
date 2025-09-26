@@ -57,6 +57,28 @@ pub struct Bbr {
     round_wo_bw_gain: u64,
     ack_aggregation: AckAggregationState,
     random_number_generator: rand::rngs::StdRng,
+
+    /// Deadline scheduler configuration
+    deadline_config: Option<DeadlineConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeadlineConfig {
+    pub enabled: bool,
+    pub beta: f64,       // Conservative factor for pps estimation
+    pub guard_ms: u64,   // Guard time for jitter
+    pub default_mss: u32, // Fallback MSS
+}
+
+impl Default for DeadlineConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            beta: 0.8,
+            guard_ms: 10,
+            default_mss: 1200,
+        }
+    }
 }
 
 impl Bbr {
@@ -97,6 +119,7 @@ impl Bbr {
             bw_at_last_round: 0,
             round_wo_bw_gain: 0,
             ack_aggregation: AckAggregationState::default(),
+            deadline_config: None,
             random_number_generator: rand::rngs::StdRng::from_os_rng()
         }
     }
@@ -522,6 +545,70 @@ impl Controller for Bbr {
     fn into_any(self: Box<Self>) -> Box<dyn Any> {
         self
     }
+
+    fn can_admit_object(&self, 
+        object_size: u64, 
+        deadline: Instant, 
+        now: Instant,
+        rtt: Duration
+    ) -> bool {
+        let Some(cfg) = self.deadline_config.as_ref().filter(|c| c.enabled) else {
+            return true; // Fallback: admit everything
+        };
+        
+        // Effective pps: min(app_bandwidth, cwnd/rtt)
+        let app_bps = self.max_bandwidth.get_estimate() as f64;
+        let cwnd_bps = (self.cwnd * 8) as f64 / rtt.as_secs_f64();
+        let effective_bps = app_bps.min(cwnd_bps);
+        
+        let mss = cfg.default_mss as f64;
+        let pps = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
+        
+        // Packet count és finish time
+        let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1);
+        let guard = Duration::from_millis(cfg.guard_ms);
+        let t_finish = now + rtt / 2 + Duration::from_secs_f64(pkt_count as f64 / pps) + guard;
+        
+        t_finish <= deadline
+    }
+    
+    fn suggest_priority(&self, 
+        object_size: u64, 
+        deadline: Instant, 
+        now: Instant,
+        rtt: Duration
+    ) -> i32 {
+        let Some(cfg) = self.deadline_config.as_ref().filter(|c| c.enabled) else {
+            return 0;
+        };
+        
+        // Slack számítás
+        let app_bps = self.max_bandwidth.get_estimate() as f64;
+        let cwnd_bps = (self.cwnd * 8) as f64 / rtt.as_secs_f64();
+        let effective_bps = app_bps.min(cwnd_bps);
+
+        let mss = cfg.default_mss as f64;
+        let pps = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
+        let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1);
+        let guard = Duration::from_millis(cfg.guard_ms);
+        
+        let slack = (deadline - (now + rtt / 2)).as_secs_f64() 
+                   - (pkt_count as f64) / pps 
+                   - guard.as_secs_f64();
+        
+        slack_to_priority(slack * 1000.0) // Convert to ms
+    }
+}
+
+fn slack_to_priority(slack_ms: f64) -> i32 {
+    if !slack_ms.is_finite() { return 127; }
+    if slack_ms <= 0.0 { return 0; }
+    if slack_ms < 50.0 { return 8; }
+    if slack_ms < 100.0 { return 16; }
+    if slack_ms < 250.0 { return 32; }
+    if slack_ms < 500.0 { return 64; }
+    if slack_ms < 1000.0 { return 96; }
+    127
 }
 
 /// Configuration for the [`Bbr`] congestion controller

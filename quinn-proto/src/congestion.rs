@@ -4,6 +4,7 @@ use crate::Instant;
 use crate::connection::RttEstimator;
 use std::any::Any;
 use std::sync::Arc;
+use std::time::Duration;
 
 mod bbr;
 mod cubic;
@@ -82,6 +83,29 @@ pub trait Controller: Send + Sync {
 
     /// Returns Self for use in down-casting to extract implementation details
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
+
+    /// New: deadline-aware admission control
+    fn can_admit_object(
+        &self,
+        object_size: u64,
+        deadline: Instant,
+        now: Instant,
+        rtt: Duration,
+    ) -> bool {
+        // Default implementation: always admit (backward compatibility)
+        true
+    }
+
+    /// New: suggest priority based on deadline + current network state
+    fn suggest_priority(
+        &self,
+        object_size: u64,
+        deadline: Instant,
+        now: Instant,
+        rtt: Duration,
+    ) -> i32 {
+        0 // Default: highest priority
+    }
 }
 
 /// Common congestion controller metrics

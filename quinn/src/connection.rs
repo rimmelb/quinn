@@ -545,6 +545,24 @@ impl Connection {
             .clone_box()
     }
 
+    // Use u64 and Option<Instant>, and return the bool result.
+    pub fn can_send_suggestion(&self, object_size: u64, deadline: Option<Instant>, now: Instant) -> bool {
+        self.0
+            .state
+            .lock("can_send_suggestion")
+            .inner
+            .can_send_object(object_size, deadline, now)
+    }
+
+    // Optional: add a matching wrapper for the priority suggestion
+    pub fn suggest_object_priority(&self, object_size: u64, deadline: Option<Instant>, now: Instant) -> i32 {
+        self.0
+            .state
+            .lock("suggest_object_priority")
+            .inner
+            .suggest_object_priority(object_size, deadline, now)
+    }
+
     /// Parameters negotiated during the handshake
     ///
     /// Guaranteed to return `Some` on fully established connections or after
