@@ -60,6 +60,11 @@ pub struct Bbr {
 
     /// Deadline scheduler configuration
     deadline_config: Option<DeadlineConfig>,
+
+    // --- NEW: single-path deadline scheduler state (virt. queue in packets) ---
+    deadline_q_pkts: f64,
+    deadline_last: Option<Instant>,
+
 }
 
 #[derive(Debug, Clone)]
@@ -134,7 +139,22 @@ impl Bbr {
             round_wo_bw_gain: 0,
             ack_aggregation: AckAggregationState::default(),
             deadline_config, // <-- FIX: take from BbrConfig
-            random_number_generator: rand::rngs::StdRng::from_os_rng()
+            random_number_generator: rand::rngs::StdRng::from_os_rng(),
+
+            // NEW:
+            deadline_q_pkts: 0.0,
+            deadline_last: None,
+        }
+    }
+
+    #[inline]
+    fn deadline_decay_queue(&mut self, now: Instant, pps: f64) {
+        if pps <= 0.0 { return; }
+        let last = self.deadline_last.unwrap_or(now);
+        let dt = now.saturating_duration_since(last).as_secs_f64();
+        if dt > 0.0 {
+            self.deadline_q_pkts = (self.deadline_q_pkts - pps * dt).max(0.0);
+            self.deadline_last = Some(now);
         }
     }
 
@@ -587,12 +607,10 @@ fn can_admit_object(
         return true;
     };
 
-    // 1) RTT kiválasztása + PADLÓ (pl. 5 ms), hogy ne legyen irreális cwnd_bps
+    // --- RTT kiválasztás + padló, hogy ne fújja fel a cwnd_bps-t ---
     let mut use_rtt = if self.min_rtt.as_nanos() != 0 { self.min_rtt } else { rtt_hint };
     let rtt_floor = Duration::from_millis(5);
-    if use_rtt < rtt_floor {
-        use_rtt = rtt_floor;
-    }
+    if use_rtt < rtt_floor { use_rtt = rtt_floor; }
     if use_rtt.as_nanos() == 0 {
         tracing::debug!(
             target: "bbr.deadline",
@@ -604,30 +622,16 @@ fn can_admit_object(
         return false;
     }
 
-    // 2) Kapacitás komponensek (bit/s)
-    let app_bps  = (self.max_bandwidth.get_estimate() as f64) * 8.0; // app becslés
-    let cwnd_bps = (self.cwnd as f64 * 8.0) / use_rtt.as_secs_f64(); // cwnd/RTT
-    let pace_bps = (self.pacing_rate as f64) * 8.0;                  // pacer
+    // --- Effektív bps = min(app, cwnd, pace) a pozitív/finitemekből ---
+    let app_bps  = (self.max_bandwidth.get_estimate() as f64) * 8.0;
+    let cwnd_bps = (self.cwnd as f64 * 8.0) / use_rtt.as_secs_f64();
+    let pace_bps = (self.pacing_rate as f64) * 8.0;
 
-    // Bootstrap: ha NINCS app_bps és NINCS pace_bps, ne hagyatkozz csak cwnd-re.
-    // Engedjük át csak a nagyon kicsi objektumokat (<= 2*MSS), a többit dobd.
-    let bootstrap_only_cwnd = (app_bps <= 0.0 || !app_bps.is_finite())
-        && (pace_bps <= 0.0 || !pace_bps.is_finite());
-    if bootstrap_only_cwnd && object_size > 2 * cfg.default_mss as u64 {
-        tracing::debug!(
-            target: "bbr.deadline",
-            object_size,
-            %app_bps, %pace_bps, %cwnd_bps,
-            "admit: bootstrap (no app/pace) and object not small -> false"
-        );
-        return false;
-    }
-
-    // 3) Effective bps = minimum a POZITÍV és véges komponensekből
     let mut effective_bps = f64::INFINITY;
     if cwnd_bps.is_finite() && cwnd_bps > 0.0 { effective_bps = effective_bps.min(cwnd_bps); }
     if app_bps.is_finite()  && app_bps  > 0.0 { effective_bps = effective_bps.min(app_bps); }
     if pace_bps.is_finite() && pace_bps > 0.0 { effective_bps = effective_bps.min(pace_bps); }
+
     if !effective_bps.is_finite() || effective_bps <= 0.0 {
         tracing::debug!(
             target: "bbr.deadline",
@@ -642,19 +646,33 @@ fn can_admit_object(
         return false;
     }
 
-    // 4) Időbecslés (+1 MSS overhead, guard, eps)
+    // --- Egy-path MPR képlet: pps, q, pktNum, trans_time ---
     let mss = cfg.default_mss as f64;
-    let bytes_total = object_size.saturating_add(cfg.default_mss as u64) as f64;
-    let tx_time_s = bytes_total * 8.0 / effective_bps;
+    let pps = (effective_bps / 8.0 / mss).max(1.0) * cfg.beta; // konzervatív
+    let pkt_num = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1) as f64;
+
+    // virtuális sor elöregítése (q := max(q - pps*Δt, 0))
+    // NOTE: self-mutable kell, ezért shadow-oljuk magunkat egy mut ref-re
+    let mut this = self.clone(); // ha itt nem akarsz clone-olni, tedd a metódust &mut self-re
+    this.deadline_decay_queue(now, pps);
+    let virt_q_before = this.deadline_q_pkts;
+
+    // trans_time = RTT/2 + (q + pktNum)/pps
+    let trans_time = use_rtt / 2 + Duration::from_secs_f64((virt_q_before + pkt_num) / pps);
+
     let guard = Duration::from_millis(cfg.guard_ms);
-    let t_finish = now + use_rtt / 2 + Duration::from_secs_f64(tx_time_s) + guard;
+    let admit = now + trans_time + guard <= deadline;
 
-    let pps = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
-    let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1);
+    // ha befér, „vízbetöltés”: q += pktNum (water-filling single path)
+    let virt_q_after = if admit {
+        this.deadline_q_pkts = virt_q_before + pkt_num;
+        this.deadline_last = Some(now);
+        this.deadline_q_pkts
+    } else {
+        virt_q_before
+    };
 
-    let eps = Duration::from_millis(1);
-    let admit = t_finish + eps <= deadline;
-
+    // DIAG
     tracing::debug!(
         target: "bbr.deadline",
         object_size,
@@ -669,14 +687,19 @@ fn can_admit_object(
         mss = %mss,
         beta = %cfg.beta,
         pps = %pps,
-        pkt_count,
+        pkt_num = %pkt_num,
+        virt_q_before = %virt_q_before,
+        virt_q_after  = %virt_q_after,
+        trans_time = ?trans_time,
         guard_ms = cfg.guard_ms,
         now = ?now,
         deadline = ?deadline,
-        t_finish = ?t_finish,
         admit,
-        "BBR deadline admission decision"
+        "BBR single-path deadline admission (water-filling)"
     );
+
+    // VISSZAÍRÁS: ha nem clone-oltál fent, itt self-be kell menteni a módosított q-t
+    // (ha clone-oltál, cseréld le self.deadline_* -t this.deadline_* -re a struktúrában)
 
     admit
 }
