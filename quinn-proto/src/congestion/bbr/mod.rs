@@ -587,8 +587,12 @@ fn can_admit_object(
         return true;
     };
 
-    // 1) RTT kiválasztása (fallback a hintre). Ha így sincs, konzervatív elutasítás.
-    let use_rtt = if self.min_rtt.as_nanos() != 0 { self.min_rtt } else { rtt_hint };
+    // 1) RTT kiválasztása + PADLÓ (pl. 5 ms), hogy ne legyen irreális cwnd_bps
+    let mut use_rtt = if self.min_rtt.as_nanos() != 0 { self.min_rtt } else { rtt_hint };
+    let rtt_floor = Duration::from_millis(5);
+    if use_rtt < rtt_floor {
+        use_rtt = rtt_floor;
+    }
     if use_rtt.as_nanos() == 0 {
         tracing::debug!(
             target: "bbr.deadline",
@@ -601,18 +605,29 @@ fn can_admit_object(
     }
 
     // 2) Kapacitás komponensek (bit/s)
-    let app_bps  = (self.max_bandwidth.get_estimate() as f64) * 8.0;            // app becslés
-    let cwnd_bps = (self.cwnd as f64 * 8.0) / use_rtt.as_secs_f64();            // cwnd/RTT
-    let pace_bps = (self.pacing_rate as f64) * 8.0;                             // pacer
+    let app_bps  = (self.max_bandwidth.get_estimate() as f64) * 8.0; // app becslés
+    let cwnd_bps = (self.cwnd as f64 * 8.0) / use_rtt.as_secs_f64(); // cwnd/RTT
+    let pace_bps = (self.pacing_rate as f64) * 8.0;                  // pacer
 
-    // Bootstrap-barát: a POZITÍV és véges komponensek minimuma legyen az effective_bps.
-    // (Ha valamelyik 0 vagy NaN, azt kihagyjuk a min-ből.)
+    // Bootstrap: ha NINCS app_bps és NINCS pace_bps, ne hagyatkozz csak cwnd-re.
+    // Engedjük át csak a nagyon kicsi objektumokat (<= 2*MSS), a többit dobd.
+    let bootstrap_only_cwnd = (app_bps <= 0.0 || !app_bps.is_finite())
+        && (pace_bps <= 0.0 || !pace_bps.is_finite());
+    if bootstrap_only_cwnd && object_size > 2 * cfg.default_mss as u64 {
+        tracing::debug!(
+            target: "bbr.deadline",
+            object_size,
+            %app_bps, %pace_bps, %cwnd_bps,
+            "admit: bootstrap (no app/pace) and object not small -> false"
+        );
+        return false;
+    }
+
+    // 3) Effective bps = minimum a POZITÍV és véges komponensekből
     let mut effective_bps = f64::INFINITY;
     if cwnd_bps.is_finite() && cwnd_bps > 0.0 { effective_bps = effective_bps.min(cwnd_bps); }
     if app_bps.is_finite()  && app_bps  > 0.0 { effective_bps = effective_bps.min(app_bps); }
     if pace_bps.is_finite() && pace_bps > 0.0 { effective_bps = effective_bps.min(pace_bps); }
-
-    // Ha semmilyen pozitív komponens nincs, nem tudunk megbízhatóan időt becsülni -> elutasítás.
     if !effective_bps.is_finite() || effective_bps <= 0.0 {
         tracing::debug!(
             target: "bbr.deadline",
@@ -627,18 +642,16 @@ fn can_admit_object(
         return false;
     }
 
-    // 3) Időbecslés (konzervatív: +1 MSS overhead)
+    // 4) Időbecslés (+1 MSS overhead, guard, eps)
     let mss = cfg.default_mss as f64;
-    let bytes_total = object_size.saturating_add(cfg.default_mss as u64) as f64; // +1 MSS
-    let tx_time_s = bytes_total * 8.0 / effective_bps;                           // s
+    let bytes_total = object_size.saturating_add(cfg.default_mss as u64) as f64;
+    let tx_time_s = bytes_total * 8.0 / effective_bps;
     let guard = Duration::from_millis(cfg.guard_ms);
     let t_finish = now + use_rtt / 2 + Duration::from_secs_f64(tx_time_s) + guard;
 
-    // diagnosztikai extrák a loghoz
     let pps = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
     let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1);
 
-    // Kis zajtűrés
     let eps = Duration::from_millis(1);
     let admit = t_finish + eps <= deadline;
 
@@ -667,6 +680,7 @@ fn can_admit_object(
 
     admit
 }
+
 
 
     
