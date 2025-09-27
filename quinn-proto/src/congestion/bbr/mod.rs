@@ -576,63 +576,65 @@ impl Controller for Bbr {
         self
     }
 
-    fn can_admit_object(&self, 
-        object_size: u64, 
-        deadline: Instant, 
-        now: Instant,
-        rtt: Duration
-    ) -> bool {
-        let Some(cfg) = self.deadline_config.as_ref().filter(|c| c.enabled) else {
-            tracing::debug!(
-                target: "bbr.deadline",
-                object_size,
-                ?deadline,
-                ?now,
-                "admit: no deadline scheduler configured -> true"
-            );
-            return true; // Fallback: admit everything
-        };
-        
-        // Effective pps: min(app_bandwidth, cwnd/RTT)
-        let bw_estimate = self.max_bandwidth.get_estimate(); // bytes/sec
-        let app_bps = bw_estimate as f64 * 8.0;              // bit/s
-        let cwnd_bps = (self.cwnd as f64 * 8.0) / rtt.as_secs_f64();
-        let effective_bps = app_bps.min(cwnd_bps);
-        
-        let mss = cfg.default_mss as f64;
-        let pps = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
-        
-        // Packet count és finish time
-        let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1);
-        let guard = Duration::from_millis(cfg.guard_ms);
-        let t_finish = now + rtt / 2 + Duration::from_secs_f64(pkt_count as f64 / pps) + guard;
+    fn can_admit_object(&self, object_size: u64, deadline: Instant, now: Instant, rtt: Duration) -> bool {
+    let Some(cfg) = self.deadline_config.as_ref().filter(|c| c.enabled) else {
+        return true;
+    };
 
-        let admit = t_finish <= deadline;
-
-        tracing::debug!(
-            target: "bbr.deadline",
-            object_size,
-            bw_estimate_bytes_per_s = bw_estimate,
-            cwnd_bytes = self.cwnd,
-            min_rtt = ?self.min_rtt,
-            rtt = ?rtt,
-            app_bps = %app_bps,
-            cwnd_bps = %cwnd_bps,
-            effective_bps = %effective_bps,
-            mss = %mss,
-            beta = %cfg.beta,
-            pps = %pps,
-            pkt_count,
-            guard_ms = cfg.guard_ms,
-            now = ?now,
-            deadline = ?deadline,
-            t_finish = ?t_finish,
-            admit,
-            "BBR deadline admission decision"
-        );
-        
-        admit
+    // Warm-up: amíg nincs normális becslés, ne legyünk túl szigorúak
+    let is_warmup = self.max_bandwidth.get_estimate() == 0 || self.min_rtt.as_nanos() == 0;
+    if is_warmup {
+        // Engedékeny: engedd be (vagy tegyél ide enyhébb becslést)
+        return true;
     }
+
+    // RTT fallback
+    let use_rtt = if self.min_rtt.as_nanos() != 0 { self.min_rtt } else { rtt };
+
+    // Bitek/s mindhárom forrásból
+    let app_bps  = (self.max_bandwidth.get_estimate() as f64) * 8.0;
+    let cwnd_bps = (self.cwnd as f64 * 8.0) / use_rtt.as_secs_f64();
+    let pace_bps = (self.pacing_rate as f64) * 8.0;
+
+    // Konzervatív, de nem nulla: vegyük a pacert is figyelembe
+    let effective_bps = app_bps.min(cwnd_bps).max(pace_bps);
+
+    let mss = cfg.default_mss as f64;
+    let pps = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
+    let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1);
+
+    let small = object_size <= 2 * cfg.default_mss as u64;
+    let guard = if small { Duration::from_millis(cfg.guard_ms.saturating_sub(5)) }
+                else      { Duration::from_millis(cfg.guard_ms) };
+
+    let t_finish = now + use_rtt / 2 + Duration::from_secs_f64(pkt_count as f64 / pps) + guard;
+    let admit = t_finish + Duration::from_millis(2) <= deadline;
+
+    tracing::debug!(
+        target: "bbr.deadline",
+        object_size,
+        bw_estimate_bytes_per_s = self.max_bandwidth.get_estimate(),
+        cwnd_bytes = self.cwnd,
+        min_rtt = ?self.min_rtt,
+        use_rtt = ?use_rtt,
+        app_bps = %app_bps,
+        cwnd_bps = %cwnd_bps,
+        pace_bps = %pace_bps,
+        effective_bps = %effective_bps,
+        mss = %mss,
+        beta = %cfg.beta,
+        pps = %pps,
+        pkt_count,
+        guard_ms = cfg.guard_ms,
+        now = ?now,
+        deadline = ?deadline,
+        t_finish = ?t_finish,
+        admit,
+        "BBR deadline admission decision (patched)"
+    );
+    admit
+}
+
     
     fn suggest_priority(&self, 
         object_size: u64, 
