@@ -581,13 +581,13 @@ fn can_admit_object(
     object_size: u64,
     deadline: Instant,
     now: Instant,
-    rtt_hint: Duration,   // a hívó adja (pl. aktuális RTT), fallbacknak
+    rtt_hint: Duration, // a hívó adja (pl. aktuális RTT), fallbacknak
 ) -> bool {
     let Some(cfg) = self.deadline_config.as_ref().filter(|c| c.enabled) else {
         return true;
     };
 
-    // 1) RTT kiválasztása
+    // 1) RTT kiválasztása (fallback a hintre). Ha így sincs, konzervatív elutasítás.
     let use_rtt = if self.min_rtt.as_nanos() != 0 { self.min_rtt } else { rtt_hint };
     if use_rtt.as_nanos() == 0 {
         tracing::debug!(
@@ -600,12 +600,20 @@ fn can_admit_object(
         return false;
     }
 
-    // 2) Szűk keresztmetszet (bit/s) = MIN(app, cwnd, pace)
-    let app_bps  = (self.max_bandwidth.get_estimate() as f64) * 8.0;
-    let cwnd_bps = (self.cwnd as f64 * 8.0) / use_rtt.as_secs_f64();
-    let pace_bps = (self.pacing_rate as f64) * 8.0;
+    // 2) Kapacitás komponensek (bit/s)
+    let app_bps  = (self.max_bandwidth.get_estimate() as f64) * 8.0;            // app becslés
+    let cwnd_bps = (self.cwnd as f64 * 8.0) / use_rtt.as_secs_f64();            // cwnd/RTT
+    let pace_bps = (self.pacing_rate as f64) * 8.0;                             // pacer
 
-    if app_bps <= 0.0 || !cwnd_bps.is_finite() || cwnd_bps <= 0.0 || pace_bps <= 0.0 {
+    // Bootstrap-barát: a POZITÍV és véges komponensek minimuma legyen az effective_bps.
+    // (Ha valamelyik 0 vagy NaN, azt kihagyjuk a min-ből.)
+    let mut effective_bps = f64::INFINITY;
+    if cwnd_bps.is_finite() && cwnd_bps > 0.0 { effective_bps = effective_bps.min(cwnd_bps); }
+    if app_bps.is_finite()  && app_bps  > 0.0 { effective_bps = effective_bps.min(app_bps); }
+    if pace_bps.is_finite() && pace_bps > 0.0 { effective_bps = effective_bps.min(pace_bps); }
+
+    // Ha semmilyen pozitív komponens nincs, nem tudunk megbízhatóan időt becsülni -> elutasítás.
+    if !effective_bps.is_finite() || effective_bps <= 0.0 {
         tracing::debug!(
             target: "bbr.deadline",
             object_size,
@@ -614,24 +622,23 @@ fn can_admit_object(
             min_rtt = ?self.min_rtt,
             use_rtt = ?use_rtt,
             %app_bps, %cwnd_bps, %pace_bps,
-            "admit: missing/zero capacity component -> false"
+            "admit: no positive capacity component -> false"
         );
         return false;
     }
 
-    let effective_bps = app_bps.min(cwnd_bps).min(pace_bps);
-
-    // 3) Időbecslés
+    // 3) Időbecslés (konzervatív: +1 MSS overhead)
     let mss = cfg.default_mss as f64;
-    let bytes_total = object_size.saturating_add(cfg.default_mss as u64) as f64; // +1 MSS overhead becslés
-    let tx_time_s = bytes_total * 8.0 / effective_bps;
+    let bytes_total = object_size.saturating_add(cfg.default_mss as u64) as f64; // +1 MSS
+    let tx_time_s = bytes_total * 8.0 / effective_bps;                           // s
     let guard = Duration::from_millis(cfg.guard_ms);
     let t_finish = now + use_rtt / 2 + Duration::from_secs_f64(tx_time_s) + guard;
 
-    // (opcionális) extra diagnosztika: pps és packet count a loghoz
+    // diagnosztikai extrák a loghoz
     let pps = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
     let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1);
 
+    // Kis zajtűrés
     let eps = Duration::from_millis(1);
     let admit = t_finish + eps <= deadline;
 
@@ -657,8 +664,10 @@ fn can_admit_object(
         admit,
         "BBR deadline admission decision"
     );
+
     admit
 }
+
 
     
     fn suggest_priority(&self, 
