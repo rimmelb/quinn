@@ -85,6 +85,20 @@ impl Bbr {
     /// Construct a state using the given `config` and current time `now`
     pub fn new(config: Arc<BbrConfig>, current_mtu: u16) -> Self {
         let initial_window = config.initial_window;
+        let deadline_config = config.deadline.clone();
+        if let Some(dc) = &deadline_config {
+            tracing::debug!(
+                target: "bbr.deadline",
+                enabled = dc.enabled,
+                beta = dc.beta,
+                guard_ms = dc.guard_ms,
+                default_mss = dc.default_mss,
+                "BBR constructed with DeadlineConfig"
+            );
+        } else {
+            tracing::debug!(target: "bbr.deadline", "BBR constructed without DeadlineConfig");
+        }
+
         Self {
             config,
             current_mtu: current_mtu as u64,
@@ -119,7 +133,7 @@ impl Bbr {
             bw_at_last_round: 0,
             round_wo_bw_gain: 0,
             ack_aggregation: AckAggregationState::default(),
-            deadline_config: None,
+            deadline_config, // <-- FIX: take from BbrConfig
             random_number_generator: rand::rngs::StdRng::from_os_rng()
         }
     }
