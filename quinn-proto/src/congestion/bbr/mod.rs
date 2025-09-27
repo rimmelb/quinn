@@ -518,6 +518,22 @@ impl Controller for Bbr {
     }
 
     fn window(&self) -> u64 {
+        // FIX: if fixed pacing is configured, derive cwnd from bps and min_rtt
+        if let Some(bps) = self.config.fixed_pacing_bps {
+            if self.min_rtt.as_nanos() != 0 {
+                // bytes = bps * rtt_seconds / 8
+                let win_bytes = ((bps as f64) * (self.min_rtt.as_secs_f64()) / 8.0) as u64;
+                // Respect recovery limitations like the original code does
+                if self.mode == Mode::ProbeRtt {
+                    return self.get_probe_rtt_cwnd();
+                } else if self.recovery_state.in_recovery() && self.mode != Mode::Startup {
+                    return win_bytes.max(self.min_cwnd).min(self.recovery_window);
+                }
+                return win_bytes.max(self.min_cwnd);
+            }
+            // no RTT yet: fall back to normal behavior below
+        }
+
         if self.mode == Mode::ProbeRtt {
             return self.get_probe_rtt_cwnd();
         } else if self.recovery_state.in_recovery() && self.mode != Mode::Startup {
@@ -616,7 +632,9 @@ fn slack_to_priority(slack_ms: f64) -> i32 {
 pub struct BbrConfig {
     initial_window: u64,
     min_pacing_bps: u64,
-    deadline: Option<DeadlineConfig>
+    deadline: Option<DeadlineConfig>,
+    // FIX: optional fixed pacing in bits/s
+    fixed_pacing_bps: Option<u64>,
 }
 
 impl BbrConfig {
@@ -631,6 +649,11 @@ impl BbrConfig {
     /// For testing purposes only. If set to a non-zero value, this will
     /// enforce a minimum pacing rate in bits per second.
     pub fn min_pacing_bps(&mut self, v: u64) -> &mut Self { self.min_pacing_bps = v; self }
+
+    pub fn fixed_pacing_bps(mut self, bps: u64) -> Self {
+        self.fixed_pacing_bps = Some(bps);
+        self
+    }
 
     pub fn enable_deadline_scheduler(mut self, enabled: bool) -> Self {
         let mut d = self.deadline.unwrap_or_default();
@@ -663,7 +686,9 @@ impl Default for BbrConfig {
         Self {
             initial_window: K_MAX_INITIAL_CONGESTION_WINDOW * BASE_DATAGRAM_SIZE,
             min_pacing_bps: 0,
-            deadline: None
+            deadline: None,
+            // FIX: default disabled
+            fixed_pacing_bps: None,
         }
     }
 }
