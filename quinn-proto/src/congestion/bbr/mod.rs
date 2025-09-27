@@ -569,12 +569,20 @@ impl Controller for Bbr {
         rtt: Duration
     ) -> bool {
         let Some(cfg) = self.deadline_config.as_ref().filter(|c| c.enabled) else {
+            tracing::debug!(
+                target: "bbr.deadline",
+                object_size,
+                ?deadline,
+                ?now,
+                "admit: no deadline scheduler configured -> true"
+            );
             return true; // Fallback: admit everything
         };
         
-        // Effective pps: min(app_bandwidth, cwnd/rtt)
-        let app_bps = self.max_bandwidth.get_estimate() as f64;
-        let cwnd_bps = (self.cwnd * 8) as f64 / rtt.as_secs_f64();
+        // Effective pps: min(app_bandwidth, cwnd/RTT)
+        let bw_estimate = self.max_bandwidth.get_estimate(); // bytes/sec
+        let app_bps = bw_estimate as f64 * 8.0;              // bit/s
+        let cwnd_bps = (self.cwnd as f64 * 8.0) / rtt.as_secs_f64();
         let effective_bps = app_bps.min(cwnd_bps);
         
         let mss = cfg.default_mss as f64;
@@ -584,8 +592,32 @@ impl Controller for Bbr {
         let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1);
         let guard = Duration::from_millis(cfg.guard_ms);
         let t_finish = now + rtt / 2 + Duration::from_secs_f64(pkt_count as f64 / pps) + guard;
+
+        let admit = t_finish <= deadline;
+
+        tracing::debug!(
+            target: "bbr.deadline",
+            object_size,
+            bw_estimate_bytes_per_s = bw_estimate,
+            cwnd_bytes = self.cwnd,
+            min_rtt = ?self.min_rtt,
+            rtt = ?rtt,
+            app_bps = %app_bps,
+            cwnd_bps = %cwnd_bps,
+            effective_bps = %effective_bps,
+            mss = %mss,
+            beta = %cfg.beta,
+            pps = %pps,
+            pkt_count,
+            guard_ms = cfg.guard_ms,
+            now = ?now,
+            deadline = ?deadline,
+            t_finish = ?t_finish,
+            admit,
+            "BBR deadline admission decision"
+        );
         
-        t_finish <= deadline
+        admit
     }
     
     fn suggest_priority(&self, 
