@@ -576,7 +576,7 @@ impl Controller for Bbr {
         self
     }
 
-    fn can_admit_object(
+fn can_admit_object(
     &self,
     object_size: u64,
     deadline: Instant,
@@ -587,44 +587,78 @@ impl Controller for Bbr {
         return true;
     };
 
-    // 1) Válassz RTT-t: ha nincs min_rtt, használd a hintet, különben NINCS admission (kivéve initet a hívóban).
+    // 1) RTT kiválasztása
     let use_rtt = if self.min_rtt.as_nanos() != 0 { self.min_rtt } else { rtt_hint };
     if use_rtt.as_nanos() == 0 {
-        // nincs értelmes RTT → konzervatív elutasítás
+        tracing::debug!(
+            target: "bbr.deadline",
+            object_size,
+            min_rtt = ?self.min_rtt,
+            rtt_hint = ?rtt_hint,
+            "admit: no usable RTT (both zero) -> false"
+        );
         return false;
     }
 
-    // 2) Szűk keresztmetszet (bit/s): MIN mindháromból
-    let app_bps  = (self.max_bandwidth.get_estimate() as f64) * 8.0;               // bit/s
-    let cwnd_bps = (self.cwnd as f64 * 8.0) / use_rtt.as_secs_f64();               // bit/s
-    let pace_bps = (self.pacing_rate as f64) * 8.0;                                // bit/s
+    // 2) Szűk keresztmetszet (bit/s) = MIN(app, cwnd, pace)
+    let app_bps  = (self.max_bandwidth.get_estimate() as f64) * 8.0;
+    let cwnd_bps = (self.cwnd as f64 * 8.0) / use_rtt.as_secs_f64();
+    let pace_bps = (self.pacing_rate as f64) * 8.0;
 
-    // Ha bármelyik 0, nincs megbízható adat → NE engedj (kivéve init a hívóban)
-    if app_bps <= 0.0 || cwnd_bps.is_nan() || cwnd_bps <= 0.0 || pace_bps <= 0.0 {
+    if app_bps <= 0.0 || !cwnd_bps.is_finite() || cwnd_bps <= 0.0 || pace_bps <= 0.0 {
+        tracing::debug!(
+            target: "bbr.deadline",
+            object_size,
+            bw_estimate_bytes_per_s = self.max_bandwidth.get_estimate(),
+            cwnd_bytes = self.cwnd,
+            min_rtt = ?self.min_rtt,
+            use_rtt = ?use_rtt,
+            %app_bps, %cwnd_bps, %pace_bps,
+            "admit: missing/zero capacity component -> false"
+        );
         return false;
     }
 
-    // Hatékony bps: a szűk keresztmetszet
     let effective_bps = app_bps.min(cwnd_bps).min(pace_bps);
 
-    // 3) Átvitel ideje (másodperc): object_size / (effective_bps/8)
+    // 3) Időbecslés
     let mss = cfg.default_mss as f64;
-    // apró felső becslés: fejlécek miatt +1 MSS
-    let bytes_total = object_size.saturating_add(cfg.default_mss as u64) as f64;
-    let tx_time = bytes_total * 8.0 / effective_bps; // s
-
-    // kis objektumokra nem adunk "ingyen belépőt"; csak kisebb guardot
+    let bytes_total = object_size.saturating_add(cfg.default_mss as u64) as f64; // +1 MSS overhead becslés
+    let tx_time_s = bytes_total * 8.0 / effective_bps;
     let guard = Duration::from_millis(cfg.guard_ms);
-    let t_finish = now
-        + use_rtt / 2
-        + Duration::from_secs_f64(tx_time)
-        + guard;
+    let t_finish = now + use_rtt / 2 + Duration::from_secs_f64(tx_time_s) + guard;
 
-    // kis zajtűrés
+    // (opcionális) extra diagnosztika: pps és packet count a loghoz
+    let pps = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
+    let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1);
+
     let eps = Duration::from_millis(1);
-    t_finish + eps <= deadline
-}
+    let admit = t_finish + eps <= deadline;
 
+    tracing::debug!(
+        target: "bbr.deadline",
+        object_size,
+        bw_estimate_bytes_per_s = self.max_bandwidth.get_estimate(),
+        cwnd_bytes = self.cwnd,
+        min_rtt = ?self.min_rtt,
+        use_rtt = ?use_rtt,
+        app_bps = %app_bps,
+        cwnd_bps = %cwnd_bps,
+        pace_bps = %pace_bps,
+        effective_bps = %effective_bps,
+        mss = %mss,
+        beta = %cfg.beta,
+        pps = %pps,
+        pkt_count,
+        guard_ms = cfg.guard_ms,
+        now = ?now,
+        deadline = ?deadline,
+        t_finish = ?t_finish,
+        admit,
+        "BBR deadline admission decision"
+    );
+    admit
+}
 
     
     fn suggest_priority(&self, 
