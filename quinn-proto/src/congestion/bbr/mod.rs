@@ -576,64 +576,55 @@ impl Controller for Bbr {
         self
     }
 
-    fn can_admit_object(&self, object_size: u64, deadline: Instant, now: Instant, rtt: Duration) -> bool {
+    fn can_admit_object(
+    &self,
+    object_size: u64,
+    deadline: Instant,
+    now: Instant,
+    rtt_hint: Duration,   // a hívó adja (pl. aktuális RTT), fallbacknak
+) -> bool {
     let Some(cfg) = self.deadline_config.as_ref().filter(|c| c.enabled) else {
         return true;
     };
 
-    // Warm-up: amíg nincs normális becslés, ne legyünk túl szigorúak
-    let is_warmup = self.max_bandwidth.get_estimate() == 0 || self.min_rtt.as_nanos() == 0;
-    if is_warmup {
-        // Engedékeny: engedd be (vagy tegyél ide enyhébb becslést)
-        return true;
+    // 1) Válassz RTT-t: ha nincs min_rtt, használd a hintet, különben NINCS admission (kivéve initet a hívóban).
+    let use_rtt = if self.min_rtt.as_nanos() != 0 { self.min_rtt } else { rtt_hint };
+    if use_rtt.as_nanos() == 0 {
+        // nincs értelmes RTT → konzervatív elutasítás
+        return false;
     }
 
-    // RTT fallback
-    let use_rtt = if self.min_rtt.as_nanos() != 0 { self.min_rtt } else { rtt };
+    // 2) Szűk keresztmetszet (bit/s): MIN mindháromból
+    let app_bps  = (self.max_bandwidth.get_estimate() as f64) * 8.0;               // bit/s
+    let cwnd_bps = (self.cwnd as f64 * 8.0) / use_rtt.as_secs_f64();               // bit/s
+    let pace_bps = (self.pacing_rate as f64) * 8.0;                                // bit/s
 
-    // Bitek/s mindhárom forrásból
-    let app_bps  = (self.max_bandwidth.get_estimate() as f64) * 8.0;
-    let cwnd_bps = (self.cwnd as f64 * 8.0) / use_rtt.as_secs_f64();
-    let pace_bps = (self.pacing_rate as f64) * 8.0;
+    // Ha bármelyik 0, nincs megbízható adat → NE engedj (kivéve init a hívóban)
+    if app_bps <= 0.0 || cwnd_bps.is_nan() || cwnd_bps <= 0.0 || pace_bps <= 0.0 {
+        return false;
+    }
 
-    // Konzervatív, de nem nulla: vegyük a pacert is figyelembe
-    let effective_bps = app_bps.min(cwnd_bps).max(pace_bps);
+    // Hatékony bps: a szűk keresztmetszet
+    let effective_bps = app_bps.min(cwnd_bps).min(pace_bps);
 
+    // 3) Átvitel ideje (másodperc): object_size / (effective_bps/8)
     let mss = cfg.default_mss as f64;
-    let pps = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
-    let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1);
+    // apró felső becslés: fejlécek miatt +1 MSS
+    let bytes_total = object_size.saturating_add(cfg.default_mss as u64) as f64;
+    let tx_time = bytes_total * 8.0 / effective_bps; // s
 
-    let small = object_size <= 2 * cfg.default_mss as u64;
-    let guard = if small { Duration::from_millis(cfg.guard_ms.saturating_sub(5)) }
-                else      { Duration::from_millis(cfg.guard_ms) };
+    // kis objektumokra nem adunk "ingyen belépőt"; csak kisebb guardot
+    let guard = Duration::from_millis(cfg.guard_ms);
+    let t_finish = now
+        + use_rtt / 2
+        + Duration::from_secs_f64(tx_time)
+        + guard;
 
-    let t_finish = now + use_rtt / 2 + Duration::from_secs_f64(pkt_count as f64 / pps) + guard;
-    let admit = t_finish + Duration::from_millis(2) <= deadline;
-
-    tracing::debug!(
-        target: "bbr.deadline",
-        object_size,
-        bw_estimate_bytes_per_s = self.max_bandwidth.get_estimate(),
-        cwnd_bytes = self.cwnd,
-        min_rtt = ?self.min_rtt,
-        use_rtt = ?use_rtt,
-        app_bps = %app_bps,
-        cwnd_bps = %cwnd_bps,
-        pace_bps = %pace_bps,
-        effective_bps = %effective_bps,
-        mss = %mss,
-        beta = %cfg.beta,
-        pps = %pps,
-        pkt_count,
-        guard_ms = cfg.guard_ms,
-        now = ?now,
-        deadline = ?deadline,
-        t_finish = ?t_finish,
-        admit,
-        "BBR deadline admission decision (patched)"
-    );
-    admit
+    // kis zajtűrés
+    let eps = Duration::from_millis(1);
+    t_finish + eps <= deadline
 }
+
 
     
     fn suggest_priority(&self, 
