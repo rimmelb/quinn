@@ -1,6 +1,8 @@
 use std::any::Any;
 use std::fmt::Debug;
-use std::sync::Arc;
+
+use std::sync::{Arc, Mutex};
+
 
 use rand::{Rng, SeedableRng};
 
@@ -62,8 +64,7 @@ pub struct Bbr {
     deadline_config: Option<DeadlineConfig>,
 
     // --- NEW: single-path deadline scheduler state (virt. queue in packets) ---
-    deadline_q_pkts: f64,
-    deadline_last: Option<Instant>,
+    deadline_state: Arc<Mutex<DeadlineState>>,
 
 }
 
@@ -85,6 +86,18 @@ impl Default for DeadlineConfig {
         }
     }
 }
+
+#[derive(Debug, Clone)]
+struct DeadlineState {
+    q_pkts: f64,
+    last: Option<Instant>,
+}
+
+impl Default for DeadlineState {
+    fn default() -> Self {
+         Self { q_pkts: 0.0, last: None }
+     }
+ }
 
 impl Bbr {
     /// Construct a state using the given `config` and current time `now`
@@ -142,23 +155,30 @@ impl Bbr {
             random_number_generator: rand::rngs::StdRng::from_os_rng(),
 
             // NEW:
-            deadline_q_pkts: 0.0,
-            deadline_last: None,
+            deadline_state: Arc::new(Mutex::new(DeadlineState::default())),
         }
     }
 
     #[inline]
-    fn deadline_decay_queue(&mut self, now: Instant, pps: f64) {
-        if pps <= 0.0 { return; }
-        let last = self.deadline_last.unwrap_or(now);
-        let dt = now.saturating_duration_since(last).as_secs_f64();
-        if dt > 0.0 {
-            self.deadline_q_pkts = (self.deadline_q_pkts - pps * dt).max(0.0);
-            self.deadline_last = Some(now);
+    fn deadline_decay_queue(&self, now: Instant, pps: f64) {
+    if pps <= 0.0 { return; }
+    let mut st = self.deadline_state.lock().unwrap();
+    let last = st.last.unwrap_or(now);
+    let dt = now.saturating_duration_since(last).as_secs_f64();
+    if dt > 0.0 {
+            st.q_pkts = (st.q_pkts - pps * dt).max(0.0);
+            st.last = Some(now);
         }
     }
 
     fn enter_startup_mode(&mut self) {
+        if self.config.fixed_pacing_bps.is_some() {
+        // FIXED PACING: ne legyen “Startup-boost”, álljunk be cruisera
+        self.mode = Mode::ProbeBw;
+        self.pacing_gain = 1.0;
+        self.cwnd_gain = 1.0;
+        return;
+        }
         self.mode = Mode::Startup;
         self.pacing_gain = self.high_gain;
         self.cwnd_gain = self.high_cwnd_gain;
@@ -213,6 +233,13 @@ impl Bbr {
     }
 
     fn update_gain_cycle_phase(&mut self, now: Instant, in_flight: u64) {
+
+        // FIXED PACING: ne ciklussal “hintázzon” a gain — maradjon 1.0
+        if self.config.fixed_pacing_bps.is_some() {
+        self.pacing_gain = 1.0;
+        // de állapotgépet nem piszkáljuk, csak nem léptetünk ciklust
+        return;
+        }
         // In most cases, the cycle is advanced after an RTT passes.
         let mut should_advance_gain_cycling = self
             .last_cycle_start
@@ -333,32 +360,42 @@ impl Bbr {
         self.min_cwnd
     }
 
-    fn calculate_pacing_rate(&mut self) {
-        let bw = self.max_bandwidth.get_estimate();
-        if bw == 0 {
-            return;
-        }
-        let target_rate = (bw as f64 * self.pacing_gain as f64) as u64;
-        if self.is_at_full_bandwidth {
-            self.pacing_rate = target_rate;
-            return;
-        }
+fn calculate_pacing_rate(&mut self) {
+    // FIXED PACING: ha be van állítva, közvetlenül ebből számolunk byte/s tempót
+    if let Some(bps) = self.config.fixed_pacing_bps {
+        // byte/s (metrics() majd *8-cal visszaadja bit/s-ban)
+        self.pacing_rate = (bps / 8).max(1);
+        // ne moduláljunk gain-nel fix módban
+        self.pacing_gain = 1.0;
+        return;
+    }
 
-        // Pace at the rate of initial_window / RTT as soon as RTT measurements are
-        // available.
-        if self.pacing_rate == 0 && self.min_rtt.as_nanos() != 0 {
-            self.pacing_rate =
-                BandwidthEstimation::bw_from_delta(self.init_cwnd, self.min_rtt).unwrap();
-            return;
-        }
+    // --- Eredeti BBR logika (fallback) ---
+    let bw = self.max_bandwidth.get_estimate();
+    if bw == 0 {
+        return;
+    }
+    let target_rate = (bw as f64 * self.pacing_gain as f64) as u64;
+    if self.is_at_full_bandwidth {
+        self.pacing_rate = target_rate;
+        return;
+    }
 
-        // Do not decrease the pacing rate during startup.
-        if self.pacing_rate < target_rate {
-            self.pacing_rate = target_rate;
-        }
+    // Pace: initial_window / RTT, amint van RTT
+    if self.pacing_rate == 0 && self.min_rtt.as_nanos() != 0 {
+        self.pacing_rate =
+            BandwidthEstimation::bw_from_delta(self.init_cwnd, self.min_rtt).unwrap();
+        return;
+    }
 
-        if let Some(floor_bps) = Some(self.config.min_pacing_bps) {
-        if self.min_rtt.as_nanos() != 0 {
+    // Startupban ne csökkentsünk pacinget
+    if self.pacing_rate < target_rate {
+        self.pacing_rate = target_rate;
+    }
+
+    // Alsó korlát, ha be van állítva
+    if let Some(floor_bps) = Some(self.config.min_pacing_bps) {
+        if floor_bps > 0 && self.min_rtt.as_nanos() != 0 {
             let win_bytes = self.window();
             let rate_cwnd = ((win_bytes as u128 * 8_000_000u128)
                 / (self.min_rtt.as_micros().max(1) as u128)) as u64;
@@ -373,7 +410,8 @@ impl Bbr {
             }
         }
     }
-    }
+}
+
 
     fn calculate_cwnd(&mut self, bytes_acked: u64, excess_acked: u64) {
         if self.mode == Mode::ProbeRtt {
@@ -601,13 +639,18 @@ fn can_admit_object(
     object_size: u64,
     deadline: Instant,
     now: Instant,
-    rtt_hint: Duration, // a hívó adja (pl. aktuális RTT), fallbacknak
+    rtt_hint: Duration,
 ) -> bool {
-    let Some(cfg) = self.deadline_config.as_ref().filter(|c| c.enabled) else {
-        return true;
+    // Config értékek kimásolása (ne tartsunk kölcsönt a későbbi lockig)
+    let (enabled, beta, guard_ms, default_mss) = match self.deadline_config.as_ref() {
+        Some(dc) => (dc.enabled, dc.beta, dc.guard_ms, dc.default_mss),
+        None => (false, 0.0, 0, 1200),
     };
+    if !enabled {
+        return true;
+    }
 
-    // --- RTT kiválasztás + padló, hogy ne fújja fel a cwnd_bps-t ---
+    // RTT padlóval
     let mut use_rtt = if self.min_rtt.as_nanos() != 0 { self.min_rtt } else { rtt_hint };
     let rtt_floor = Duration::from_millis(5);
     if use_rtt < rtt_floor { use_rtt = rtt_floor; }
@@ -622,7 +665,7 @@ fn can_admit_object(
         return false;
     }
 
-    // --- Effektív bps = min(app, cwnd, pace) a pozitív/finitemekből ---
+    // Effektív bps (a szűk komponens)
     let app_bps  = (self.max_bandwidth.get_estimate() as f64) * 8.0;
     let cwnd_bps = (self.cwnd as f64 * 8.0) / use_rtt.as_secs_f64();
     let pace_bps = (self.pacing_rate as f64) * 8.0;
@@ -646,33 +689,39 @@ fn can_admit_object(
         return false;
     }
 
-    // --- Egy-path MPR képlet: pps, q, pktNum, trans_time ---
-    let mss = cfg.default_mss as f64;
-    let pps = (effective_bps / 8.0 / mss).max(1.0) * cfg.beta; // konzervatív
-    let pkt_num = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1) as f64;
+    // MPR paraméterek
+    let mss = default_mss as f64;
+    let pps = (effective_bps / 8.0 / mss).max(1.0) * beta; // konzervatív
+    let pkt_num = ((object_size + default_mss as u64 - 1) / default_mss as u64).max(1) as f64;
 
-    // virtuális sor elöregítése (q := max(q - pps*Δt, 0))
-    // NOTE: self-mutable kell, ezért shadow-oljuk magunkat egy mut ref-re
-    let mut this = self.clone(); // ha itt nem akarsz clone-olni, tedd a metódust &mut self-re
-    this.deadline_decay_queue(now, pps);
-    let virt_q_before = this.deadline_q_pkts;
+    // Sor öregítése
+    self.deadline_decay_queue(now, pps);
+
+    // q állapot kiolvasása (rövid lock)
+    let virt_q_before = {
+        let st = self.deadline_state.lock().unwrap();
+        st.q_pkts
+    };
 
     // trans_time = RTT/2 + (q + pktNum)/pps
     let trans_time = use_rtt / 2 + Duration::from_secs_f64((virt_q_before + pkt_num) / pps);
 
-    let guard = Duration::from_millis(cfg.guard_ms);
+    let guard = Duration::from_millis(guard_ms);
     let admit = now + trans_time + guard <= deadline;
 
-    // ha befér, „vízbetöltés”: q += pktNum (water-filling single path)
-    let virt_q_after = if admit {
-        this.deadline_q_pkts = virt_q_before + pkt_num;
-        this.deadline_last = Some(now);
-        this.deadline_q_pkts
-    } else {
-        virt_q_before
+    if admit {
+        // vízbetöltés: q += pktNum (rövid lock)
+        let mut st = self.deadline_state.lock().unwrap();
+        st.q_pkts = virt_q_before + pkt_num;
+        st.last = Some(now);
+    }
+
+    // Diagnosztika – virt_q_after kiolvasása külön (rövid lock)
+    let virt_q_after = {
+        let st = self.deadline_state.lock().unwrap();
+        st.q_pkts
     };
 
-    // DIAG
     tracing::debug!(
         target: "bbr.deadline",
         object_size,
@@ -685,26 +734,21 @@ fn can_admit_object(
         pace_bps = %pace_bps,
         effective_bps = %effective_bps,
         mss = %mss,
-        beta = %cfg.beta,
+        beta = %beta,
         pps = %pps,
         pkt_num = %pkt_num,
         virt_q_before = %virt_q_before,
         virt_q_after  = %virt_q_after,
         trans_time = ?trans_time,
-        guard_ms = cfg.guard_ms,
+        guard_ms = guard_ms,
         now = ?now,
         deadline = ?deadline,
         admit,
         "BBR single-path deadline admission (water-filling)"
     );
 
-    // VISSZAÍRÁS: ha nem clone-oltál fent, itt self-be kell menteni a módosított q-t
-    // (ha clone-oltál, cseréld le self.deadline_* -t this.deadline_* -re a struktúrában)
-
     admit
 }
-
-
 
     
     fn suggest_priority(&self, 
