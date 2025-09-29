@@ -417,6 +417,18 @@ fn calculate_pacing_rate(&mut self) {
         if self.mode == Mode::ProbeRtt {
             return;
         }
+        if let Some(bps) = self.config.fixed_pacing_bps {
+        if self.min_rtt.as_nanos() != 0 {
+            // cap-hez illesztett BDP: bytes = bps * RTT / 8
+            let win_bytes = ((bps as f64) * self.min_rtt.as_secs_f64() / 8.0) as u64;
+            self.cwnd = win_bytes.max(self.min_cwnd);
+        } else {
+            // amíg nincs RTT, tartsd kicsiben (pl. min_cwnd), hogy ne burstöljön
+            self.cwnd = self.min_cwnd;
+        }
+        return; // ne növeljük tovább ACK-re
+        }
+
         let mut target_window = self.get_target_cwnd(self.cwnd_gain);
         if self.is_at_full_bandwidth {
             // Add the max recently measured ack aggregation to CWND.
@@ -590,29 +602,22 @@ impl Controller for Bbr {
     }
 
     fn window(&self) -> u64 {
-        // FIX: if fixed pacing is configured, derive cwnd from bps and min_rtt
-        if let Some(bps) = self.config.fixed_pacing_bps {
-            if self.min_rtt.as_nanos() != 0 {
-                // bytes = bps * rtt_seconds / 8
-                let win_bytes = ((bps as f64) * (self.min_rtt.as_secs_f64()) / 8.0) as u64;
-                // Respect recovery limitations like the original code does
-                if self.mode == Mode::ProbeRtt {
-                    return self.get_probe_rtt_cwnd();
-                } else if self.recovery_state.in_recovery() && self.mode != Mode::Startup {
-                    return win_bytes.max(self.min_cwnd).min(self.recovery_window);
-                }
-                return win_bytes.max(self.min_cwnd);
-            }
-            // no RTT yet: fall back to normal behavior below
-        }
-
-        if self.mode == Mode::ProbeRtt {
-            return self.get_probe_rtt_cwnd();
-        } else if self.recovery_state.in_recovery() && self.mode != Mode::Startup {
-            return self.cwnd.min(self.recovery_window);
-        }
-        self.cwnd
+    if self.mode == Mode::ProbeRtt {
+        return self.get_probe_rtt_cwnd();
     }
+    if let Some(bps) = self.config.fixed_pacing_bps {
+        if self.min_rtt.as_nanos() != 0 {
+            let win_bytes = ((bps as f64) * self.min_rtt.as_secs_f64() / 8.0) as u64;
+            return win_bytes.max(self.min_cwnd);
+        }
+        return self.min_cwnd;
+    }
+    if self.recovery_state.in_recovery() && self.mode != Mode::Startup {
+        return self.cwnd.min(self.recovery_window);
+    }
+    self.cwnd
+    }
+
 
     fn metrics(&self) -> ControllerMetrics {
         ControllerMetrics {
