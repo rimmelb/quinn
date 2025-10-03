@@ -243,7 +243,7 @@ impl StreamsState {
                 _ => continue,
             };
 
-            let deadline = send.deadline.unwrap();
+            let deadline = Instant::now();
 
             // Pending bytes
             let pending_bytes = send.pending.unacked();
