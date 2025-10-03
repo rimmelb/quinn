@@ -225,20 +225,18 @@ impl StreamsState {
     /// 
     /// Visszaadja azoknak a stream-eknek az ID-jét, amik átmennek az admission control-on
     pub(crate) fn filter_pending_by_deadline<F>(
-        &mut self,
-        mut can_admit: F,
+    &self, // ← Vissza immutable-re!
+    mut can_admit: F,
     ) -> std::collections::HashSet<StreamId>
     where
         F: FnMut(StreamId, Instant, u64) -> bool,
     {
         use std::collections::HashSet;
         let mut admitted = HashSet::new();
-        let mut to_remove = Vec::new();
 
         for pending_stream in self.pending.streams.iter() {
             let stream_id = pending_stream.id;
 
-            // Lekérjük a send stream-et
             let send = match self.send.get(&stream_id) {
                 Some(Some(send)) => send,
                 _ => continue,
@@ -246,25 +244,11 @@ impl StreamsState {
 
             let deadline = Instant::now();
 
-            // Pending bytes
             let pending_bytes = send.pending.unacked();
 
             if can_admit(stream_id, deadline, pending_bytes) {
                 admitted.insert(stream_id);
-            } else {
-                to_remove.push(stream_id);
-                trace!(
-                    stream = %stream_id,
-                    deadline = ?deadline,
-                    pending_bytes,
-                    "stream filtered out due to deadline"
-                );
             }
-
-        }
-        
-        for id in to_remove {
-                self.pending.remove(id);
         }
 
         admitted
@@ -620,10 +604,16 @@ impl StreamsState {
 
             // FIX: Deadline admission ellenőrzés
             if !admitted_streams.contains(&stream.id) {
-                trace!(stream = %stream.id, "skipping non-admitted stream");
-                continue;
+            trace!(stream = %stream.id, "deferring non-admitted stream");
+            
+            // FIX: Visszatesszük (nem töröljük!)
+            if let Some(send) = self.send.get(&stream.id).and_then(|s| s.as_ref()) {
+                self.pending.push_pending(stream.id, send.priority, send.deadline);
             }
-        
+            
+            continue;
+            }
+                
             // Priority dirty check
             let mut requeue_priority: Option<i32> = None;
             let mut new_deadline: Option<Instant> = None;
