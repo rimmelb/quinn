@@ -163,15 +163,27 @@ impl Bbr {
     #[inline]
     fn deadline_decay_queue(&self, now: Instant, pps: f64) {
         let mut st = self.deadline_state.lock().unwrap();
+        
+        // FIX: Ha nincs még last, inicializáld most-ra
         let last = st.last.unwrap_or(now);
+        
         let dt = now.saturating_duration_since(last).as_secs_f64();
 
         if dt > 0.0 && pps > 0.0 {
-            st.q_pkts = (st.q_pkts - pps * dt).max(0.0);
+            // FIX: Ne menjen negatívba
+            let decay = (pps * dt).min(st.q_pkts);
+            st.q_pkts -= decay;
+            
+            tracing::trace!(
+                target: "bbr.deadline",
+                dt_ms=(dt * 1000.0),
+                pps,
+                decay,
+                q_before=st.q_pkts + decay,
+                q_after=st.q_pkts,
+                "virtual queue decay"
+            );
         }
-
-        // Always advance the clock so subsequent calls can decay
-        st.last = Some(now);
     }
 
     fn enter_startup_mode(&mut self) {
@@ -628,7 +640,6 @@ fn can_admit_object(
     now: Instant,
     rtt_hint: Duration,
 ) -> bool {
-    // Config check
     let Some(cfg) = self.deadline_config.as_ref().filter(|c| c.enabled) else {
         return true;
     };
@@ -685,8 +696,18 @@ fn can_admit_object(
     let pps = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
     let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1) as f64;
 
-    // Virtuális sor frissítése (lineáris decay)
+    // FIX 1: Decay ELŐTT mentsd el az állapotot
+    let (virt_q_before, last_seen) = {
+        let st = self.deadline_state.lock().unwrap();
+        (st.q_pkts, st.last)
+    };
+
+    // FIX 2: Decay után AZONNAL frissítsd a timestamp-et
     self.deadline_decay_queue(now, pps);
+    {
+        let mut st = self.deadline_state.lock().unwrap();
+        st.last = Some(now);  // <-- MINDIG frissítsd!
+    }
 
     // Stale detection + cap-elés: ne legyen irreális q_pkts
     let (virt_q_before, last_seen) = {
@@ -728,28 +749,19 @@ fn can_admit_object(
         None => true,
     };
 
+    // FIX 3: Queue frissítés CSAK admit esetén
     if admit {
         let mut st = self.deadline_state.lock().unwrap();
         st.q_pkts = (virt_q_sanitized + pkt_count).min(q_cap);
-        st.last = Some(now);
     }
 
     tracing::debug!(
         target: "bbr.deadline",
         object_size,
-        cwnd_bytes,
-        bw_bytes_per_sec,
-        pacing_bytes_per_sec,
-        use_rtt=?use_rtt,
-        effective_bps=%effective_bps,
-        pps=%pps,
-        pkt_count=%pkt_count,
         virt_q_before=%virt_q_before,
-        virt_q_sanitized=%virt_q_sanitized,
-        trans_time=?trans_time,
-        guard_ms=cfg.guard_ms,
+        virt_q_after=%self.deadline_state.lock().unwrap().q_pkts,
         admit,
-        "BBR deadline admission check (using REAL BBR values)"
+        "BBR deadline admission check"
     );
 
     admit
