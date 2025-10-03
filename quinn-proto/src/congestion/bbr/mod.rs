@@ -675,6 +675,13 @@ fn can_admit_object(
 
     // PPS számítás (konzervatív béta faktorral)
     let mss = cfg.default_mss as f64;
+
+    // FIX: apró kontroll objektumok mindig átengedve
+    if object_size <= (2 * cfg.default_mss) as u64 {
+        tracing::trace!(target: "bbr.deadline", object_size, "admit small/control object bypass");
+        return true;
+    }
+
     let pps = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
     let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1) as f64;
 
@@ -715,7 +722,11 @@ fn can_admit_object(
     let guard = Duration::from_millis(cfg.guard_ms);
 
     // Globális (connection-szintű) delivery_timeout alapján döntünk
-    let admit = self.delivery_timeout.map_or(false, |timeout| now + trans_time + guard <= timeout);
+    // FIX: None esetén ne blokkoljunk (átengedés), hogy toggle ablakokban ne zárjon le a session
+    let admit = match self.delivery_timeout {
+        Some(timeout) => now + trans_time + guard <= timeout,
+        None => true,
+    };
 
     if admit {
         let mut st = self.deadline_state.lock().unwrap();
