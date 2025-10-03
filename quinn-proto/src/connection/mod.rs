@@ -543,7 +543,6 @@ impl Connection {
 
             // --- DEADLINE PRE-ADMISSION GUARD (Data space) ---
             if space_id == SpaceId::Data {
-                // Kikalkuláljuk, hogy van-e legalább egy admitted stream
                 let admitted_streams = self.streams.filter_pending_by_deadline(
                     |_stream_id, deadline, pending_bytes| {
                         self.can_send_object(pending_bytes, Some(deadline), now)
@@ -552,8 +551,12 @@ impl Connection {
 
                 let have_admitted_streams = !admitted_streams.is_empty();
 
-                // Van-e más, nem-ACK célra okunk csomagot építeni?
                 let space = &self.spaces[SpaceId::Data];
+                
+                // FIX: Különbséget teszünk ACK és egyéb control frame-ek között
+                let have_acks = !space.pending_acks.ranges().is_empty();
+                let have_ping = space.ping_pending || space.immediate_ack_pending;
+                
                 let have_other_non_ack = self.path.challenge.is_some()
                     || !self.path_responses.is_empty()
                     || !space.pending.new_cids.is_empty()
@@ -562,10 +565,14 @@ impl Connection {
                     || space.pending.ack_frequency
                     || self.datagrams.outgoing.front().is_some();
 
-                // Ha sem admitted stream, sem más non-ACK keret nincs, ugorjunk a következő space-re,
-                // így elkerüljük az ACK-only packet építést
-                if !have_admitted_streams && !have_other_non_ack {
-                    trace!("skip Data space: all streams filtered by deadline and no other non-ACK work");
+                // FIX: Ha van ACK/PING, akkor mindig engedjük a packet-et
+                // Csak akkor skip-eljünk, ha SEMMI sincs
+                if !have_admitted_streams 
+                    && !have_other_non_ack 
+                    && !have_acks
+                    && !have_ping
+                {
+                    trace!("skip Data space: no admitted streams, no ACK/PING, no other work");
                     space_idx += 1;
                     continue;
                 }
@@ -3428,25 +3435,12 @@ impl Connection {
         }
 
         if space_id == SpaceId::Data {
-            // Deadline-alapú szűrés
-            let admitted_streams = self.streams.filter_pending_by_deadline(
-                |_stream_id, deadline, pending_bytes| {
-                    self.can_send_object(pending_bytes, Some(deadline), now)
-                }
-            );
             
             sent.stream_frames = self.streams.write_stream_frames(
                 buf, 
                 max_size, 
-                self.config.send_fairness,
-                Some(now),
-                Some(&admitted_streams)
+                self.config.send_fairness
             );
-
-            // Ha semmi stream frame nem íródott, csak logoljunk (a pre-admission guard már megakadályozta az ACK-only építést)
-            if sent.stream_frames.is_empty() {
-                trace!("no stream frames written (likely all filtered by deadline)");
-            }
 
             self.stats.frame_tx.stream += sent.stream_frames.len() as u64;
         }

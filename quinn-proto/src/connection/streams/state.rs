@@ -601,37 +601,13 @@ impl StreamsState {
         buf: &mut Vec<u8>,
         max_buf_size: usize,
         fair: bool,
-        now: Option<Instant>,  // ÚJ: Opcionális timestamp
-        admitted_streams: Option<&std::collections::HashSet<StreamId>>,  // ÚJ: Opcionális szűrés
     ) -> StreamMetaVec {
-        use std::collections::HashSet;
-        
-        // Ha nincs admitted_streams, minden stream engedélyezett
-        let all_streams: HashSet<StreamId>;
-        let admitted = match admitted_streams {
-            Some(s) => s,
-            None => {
-                all_streams = self.pending.iter().map(|ps| ps.id).collect();
-                &all_streams
-            }
-        };
-        
-        self.normalize_pending();
         let mut stream_frames = StreamMetaVec::new();
         
         while buf.len() + frame::Stream::SIZE_BOUND < max_buf_size {
             let Some(mut stream) = self.pending.pop() else {
                 break;
             };
-            
-            // 🆕 DEADLINE CHECK: Skip ha nincs az admitted listában
-            if !admitted.contains(&stream.id) {
-                trace!(
-                    stream = %stream.id,
-                    "stream skipped due to deadline filtering"
-                );
-                continue;
-            }
             
             // Priority dirty check
             let mut requeue_priority: Option<i32> = None;
