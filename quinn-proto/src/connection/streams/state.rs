@@ -232,25 +232,27 @@ impl StreamsState {
         F: FnMut(StreamId, Instant, u64) -> bool,
     {
         use std::collections::HashSet;
-        
         let mut admitted = HashSet::new();
-        
-        // Iteráljuk végig a pending queue-t
+
         for pending_stream in self.pending.streams.iter() {
             let stream_id = pending_stream.id;
-            
-            // Lekérjük a send stream adatait
+
+            // Lekérjük a send stream-et
             let send = match self.send.get(&stream_id) {
                 Some(Some(send)) => send,
-                _ => continue, // Skip ha nincs send stream
+                _ => continue,
             };
-            
-            // Lekérjük a pending bytes mennyiségét
+
+            // Ha nincs deadline, automatikus admission
+            if send.deadline.is_none() {
+                admitted.insert(stream_id);
+                continue;
+            }
+            let deadline = send.deadline.unwrap();
+
+            // Pending bytes
             let pending_bytes = send.pending.unacked();
 
-            let deadline = Instant::now();
-            
-            // Admission check
             if can_admit(stream_id, deadline, pending_bytes) {
                 admitted.insert(stream_id);
             } else {
@@ -262,7 +264,6 @@ impl StreamsState {
                 );
             }
         }
-        
         admitted
     }
 

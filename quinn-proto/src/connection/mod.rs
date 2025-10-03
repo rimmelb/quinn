@@ -541,6 +541,36 @@ impl Connection {
                 continue;
             }
 
+            // --- DEADLINE PRE-ADMISSION GUARD (Data space) ---
+            if space_id == SpaceId::Data {
+                // Kikalkuláljuk, hogy van-e legalább egy admitted stream
+                let admitted_streams = self.streams.filter_pending_by_deadline(
+                    |_stream_id, deadline, pending_bytes| {
+                        self.can_send_object(pending_bytes, Some(deadline), now)
+                    }
+                );
+
+                let have_admitted_streams = !admitted_streams.is_empty();
+
+                // Van-e más, nem-ACK célra okunk csomagot építeni?
+                let space = &self.spaces[SpaceId::Data];
+                let have_other_non_ack = self.path.challenge.is_some()
+                    || !self.path_responses.is_empty()
+                    || !space.pending.new_cids.is_empty()
+                    || !space.pending.retire_cids.is_empty()
+                    || !space.pending.new_tokens.is_empty()
+                    || space.pending.ack_frequency
+                    || self.datagrams.outgoing.front().is_some();
+
+                // Ha sem admitted stream, sem más non-ACK keret nincs, ugorjunk a következő space-re,
+                // így elkerüljük az ACK-only packet építést
+                if !have_admitted_streams && !have_other_non_ack {
+                    trace!("skip Data space: all streams filtered by deadline and no other non-ACK work");
+                    space_idx += 1;
+                    continue;
+                }
+            }
+
             let mut ack_eliciting = !self.spaces[space_id].pending.is_empty(&self.streams)
                 || self.spaces[space_id].ping_pending
                 || self.spaces[space_id].immediate_ack_pending;
@@ -3397,8 +3427,6 @@ impl Connection {
             self.stats.frame_tx.new_token += 1;
         }
 
-    // STREAM
-        // quinn-proto/src/connection/mod.rs:3403
         if space_id == SpaceId::Data {
             // Deadline-alapú szűrés
             let admitted_streams = self.streams.filter_pending_by_deadline(
@@ -3411,9 +3439,15 @@ impl Connection {
                 buf, 
                 max_size, 
                 self.config.send_fairness,
-                Some(now),              // ✅ Timestamp átadása
-                Some(&admitted_streams) // ✅ Szűrt stream lista
+                Some(now),
+                Some(&admitted_streams)
             );
+
+            // Ha semmi stream frame nem íródott, csak logoljunk (a pre-admission guard már megakadályozta az ACK-only építést)
+            if sent.stream_frames.is_empty() {
+                trace!("no stream frames written (likely all filtered by deadline)");
+            }
+
             self.stats.frame_tx.stream += sent.stream_frames.len() as u64;
         }
         sent
