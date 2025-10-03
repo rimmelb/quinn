@@ -557,6 +557,14 @@ impl Connection {
 
                 admit_streams = admitted_streams;
 
+                if space_id == SpaceId::Data && !self.streams.can_send_stream_data() {
+                // Ha nincs ténylegesen küldhető stream frame (pl. minden szűrve lett),
+                // ne építsünk üres packetet ami 'other=true' státuszt sugall.
+                // Lépjünk tovább a következő space-re.
+                space_idx += 1;
+                continue;
+                }
+
                 let have_admitted_streams = !admit_streams.is_empty();
 
                 let space = &self.spaces[SpaceId::Data];
