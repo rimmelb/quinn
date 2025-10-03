@@ -243,11 +243,6 @@ impl StreamsState {
                 _ => continue,
             };
 
-            // Ha nincs deadline, automatikus admission
-            if send.deadline.is_none() {
-                admitted.insert(stream_id);
-                continue;
-            }
             let deadline = send.deadline.unwrap();
 
             // Pending bytes
