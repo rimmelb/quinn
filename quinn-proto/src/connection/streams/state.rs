@@ -227,35 +227,50 @@ impl StreamsState {
     pub(crate) fn filter_pending_by_deadline<F>(
         &self,
         mut can_admit: F,
-    ) -> Vec<StreamId>
+    ) -> std::collections::HashSet<StreamId>
     where
         F: FnMut(StreamId, Instant, u64) -> bool,
     {
-        self.pending.iter()
-            .filter_map(|pending_stream| {
-                let stream_id = pending_stream.id;
-                
-                // Lekérjük a stream adatait
-                let send = self.send.get(&stream_id)?.as_ref()?;
-                
-                // Ha nincs deadline, mindig átmegy
-                let deadline = send.deadline?;
-                let pending_bytes = send.pending.unacked();
-                
-                // Admission check
-                if can_admit(stream_id, deadline, pending_bytes) {
-                    Some(stream_id)
-                } else {
-                    trace!(
-                        stream = %stream_id,
-                        deadline = ?deadline,
-                        pending_bytes,
-                        "stream filtered out due to deadline"
-                    );
-                    None
+        use std::collections::HashSet;
+        
+        let mut admitted = HashSet::new();
+        
+        // Iteráljuk végig a pending queue-t
+        for pending_stream in self.pending.streams.iter() {
+            let stream_id = pending_stream.id;
+            
+            // Lekérjük a send stream adatait
+            let send = match self.send.get(&stream_id) {
+                Some(Some(send)) => send,
+                _ => continue, // Skip ha nincs send stream
+            };
+            
+            // Ha nincs deadline, automatikusan beengedjük
+            let deadline = match send.deadline {
+                Some(dl) => dl,
+                None => {
+                    admitted.insert(stream_id);
+                    continue;
                 }
-            })
-            .collect()
+            };
+            
+            // Lekérjük a pending bytes mennyiségét
+            let pending_bytes = send.pending.unacked();
+            
+            // Admission check
+            if can_admit(stream_id, deadline, pending_bytes) {
+                admitted.insert(stream_id);
+            } else {
+                trace!(
+                    stream = %stream_id,
+                    deadline = ?deadline,
+                    pending_bytes,
+                    "stream filtered out due to deadline"
+                );
+            }
+        }
+        
+        admitted
     }
 
     pub(crate) fn zero_rtt_rejected(&mut self) {
@@ -525,8 +540,7 @@ impl StreamsState {
 
             trace!(value = max.into_inner(), "MAX_DATA");
             if max > self.sent_max_data {
-                // Record that a `MAX_DATA` announcing a certain window was sent. This will
-                // suppress enqueuing further `MAX_DATA` frames unless either the previous
+                // Record that a `MAX_DATA` announcing a certain window was sent. This will suppress enqueuing further `MAX_DATA` frames unless either the previous
                 // transmission was not acknowledged or the window further increased.
                 self.sent_max_data = max;
             }
@@ -598,76 +612,90 @@ impl StreamsState {
         buf: &mut Vec<u8>,
         max_buf_size: usize,
         fair: bool,
+        now: Option<Instant>,  // ÚJ: Opcionális timestamp
+        admitted_streams: Option<&std::collections::HashSet<StreamId>>,  // ÚJ: Opcionális szűrés
     ) -> StreamMetaVec {
-        // Normalizáljuk a pending listát, ha szükséges
+        use std::collections::HashSet;
+        
+        // Ha nincs admitted_streams, minden stream engedélyezett
+        let all_streams: HashSet<StreamId>;
+        let admitted = match admitted_streams {
+            Some(s) => s,
+            None => {
+                all_streams = self.pending.iter().map(|ps| ps.id).collect();
+                &all_streams
+            }
+        };
+        
         self.normalize_pending();
         let mut stream_frames = StreamMetaVec::new();
+        
         while buf.len() + frame::Stream::SIZE_BOUND < max_buf_size {
-            if max_buf_size
-                .checked_sub(buf.len() + frame::Stream::SIZE_BOUND)
-                .is_none()
-            {
-                break;
-            }
-
-            // Pop the stream of the highest priority that currently has pending data
-            // If the stream still has some pending data left after writing, it will be reinserted, otherwise not
             let Some(mut stream) = self.pending.pop() else {
                 break;
             };
-
-            // Ellenőrizzük, hogy a stream priority-ja megváltozott-e időközben (dirty flag)
+            
+            // 🆕 DEADLINE CHECK: Skip ha nincs az admitted listában
+            if !admitted.contains(&stream.id) {
+                trace!(
+                    stream = %stream.id,
+                    "stream skipped due to deadline filtering"
+                );
+                continue;
+            }
+            
+            // Priority dirty check
             let mut requeue_priority: Option<i32> = None;
             let mut new_deadline: Option<Instant> = None;
             {
                 if let Some(entry) = self.send.get(&stream.id) {
                     if let Some(send) = entry.as_ref() {
-                        if send.priority_dirty { requeue_priority = Some(send.priority); }
-                        if stream.deadline.is_none() { new_deadline = send.deadline; }
+                        if send.priority_dirty { 
+                            requeue_priority = Some(send.priority); 
+                        }
+                        if stream.deadline.is_none() { 
+                            new_deadline = send.deadline; 
+                        }
                     }
                 }
             }
             if let Some(p) = requeue_priority {
-                if let Some(entry_mut) = self.send.get_mut(&stream.id) { if let Some(send_mut) = entry_mut.as_mut() { send_mut.priority_dirty = false; } }
+                if let Some(entry_mut) = self.send.get_mut(&stream.id) { 
+                    if let Some(send_mut) = entry_mut.as_mut() { 
+                        send_mut.priority_dirty = false; 
+                    } 
+                }
                 self.pending.push_pending(stream.id, p, stream.deadline);
                 continue;
             }
-            if stream.deadline.is_none() && new_deadline.is_some() { stream.deadline = new_deadline; }
+            if stream.deadline.is_none() && new_deadline.is_some() { 
+                stream.deadline = new_deadline; 
+            }
 
             let id = stream.id;
 
-            let stream = match self.send.get_mut(&id).and_then(|s| s.as_mut()) {
+            let stream_obj = match self.send.get_mut(&id).and_then(|s| s.as_mut()) {
                 Some(s) => s,
-                // Stream was reset with pending data and the reset was acknowledged
                 None => continue,
             };
 
-            // Reset streams aren't removed from the pending list and still exist while the peer
-            // hasn't acknowledged the reset, but should not generate STREAM frames, so we need to
-            // check for them explicitly.
-            if stream.is_reset() {
+            if stream_obj.is_reset() {
                 continue;
             }
 
-            // Now that we know the `StreamId`, we can better account for how many bytes
-            // are required to encode it.
             let max_buf_size = max_buf_size - buf.len() - 1 - VarInt::size(id.into());
-            let (offsets, encode_length) = stream.pending.poll_transmit(max_buf_size);
-            let fin = offsets.end == stream.pending.offset()
-                && matches!(stream.state, SendState::DataSent { .. });
+            let (offsets, encode_length) = stream_obj.pending.poll_transmit(max_buf_size);
+            let fin = offsets.end == stream_obj.pending.offset()
+                && matches!(stream_obj.state, SendState::DataSent { .. });
             if fin {
-                stream.fin_pending = false;
+                stream_obj.fin_pending = false;
             }
 
-            if stream.is_pending() {
-                // If the stream still has pending data, reinsert it, possibly with an updated priority value
-                // Fairness with other streams is achieved by implementing round-robin scheduling,
-                // so that the other streams will have a chance to write data
-                // before we touch this stream again.
+            if stream_obj.is_pending() {
                 if fair {
-                    self.pending.push_pending(id, stream.priority, stream.deadline);
+                    self.pending.push_pending(id, stream_obj.priority, stream_obj.deadline);
                 } else {
-                    self.pending.reinsert_pending(id, stream.priority);
+                    self.pending.reinsert_pending(id, stream_obj.priority);
                 }
             }
 
@@ -675,12 +703,9 @@ impl StreamsState {
             trace!(id = %meta.id, off = meta.offsets.start, len = meta.offsets.end - meta.offsets.start, fin = meta.fin, "STREAM");
             meta.encode(encode_length, buf);
 
-            // The range might not be retrievable in a single `get` if it is
-            // stored in noncontiguous fashion. Therefore this loop iterates
-            // until the range is fully copied into the frame.
             let mut offsets = meta.offsets.clone();
             while offsets.start != offsets.end {
-                let data = stream.pending.get(offsets.clone());
+                let data = stream_obj.pending.get(offsets.clone());
                 offsets.start += data.len() as u64;
                 buf.put_slice(data);
             }
@@ -1031,6 +1056,7 @@ impl StreamsState {
             Dir::Bi => self.initial_max_stream_data_bidi_remote,
         }
     }
+    
 }
 
 #[inline]
@@ -1460,6 +1486,7 @@ mod tests {
         high.write(b"high").unwrap();
 
         let mut buf = Vec::with_capacity(40);
+        
         let meta = server.write_stream_frames(&mut buf, 40, true);
         assert_eq!(meta[0].id, id_high);
         assert_eq!(meta[1].id, id_mid);

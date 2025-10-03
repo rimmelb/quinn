@@ -894,6 +894,7 @@ impl Connection {
                     && self.datagrams.outgoing.is_empty()),
                 "SendableFrames was {can_send:?}, but only ACKs have been written"
             );
+
             pad_datagram |= sent.requires_padding;
 
             if sent.largest_acked.is_some() {
@@ -3397,24 +3398,26 @@ impl Connection {
         }
 
        // STREAM
-    if space_id == SpaceId::Data {
-        // 🆕 Előszűrés deadline alapján
-        let admitted_streams = self.streams.filter_pending_by_deadline(
-            |_stream_id, deadline, pending_bytes| {
-                self.can_send_object(pending_bytes, Some(deadline), now)
-            }
-        );
-        
-        // Ha van engedélyezett stream, írjuk ki őket
-        if !admitted_streams.is_empty() {
+    // STREAM
+    // STREAM
+        // quinn-proto/src/connection/mod.rs:3403
+        if space_id == SpaceId::Data {
+            // Deadline-alapú szűrés
+            let admitted_streams = self.streams.filter_pending_by_deadline(
+                |_stream_id, deadline, pending_bytes| {
+                    self.can_send_object(pending_bytes, Some(deadline), now)
+                }
+            );
+            
             sent.stream_frames = self.streams.write_stream_frames(
                 buf, 
                 max_size, 
-                self.config.send_fairness
+                self.config.send_fairness,
+                Some(now),              // ✅ Timestamp átadása
+                Some(&admitted_streams) // ✅ Szűrt stream lista
             );
             self.stats.frame_tx.stream += sent.stream_frames.len() as u64;
         }
-    }
         sent
 }
 

@@ -466,7 +466,7 @@ impl PendingStreamsQueue {
 
 /// The [`StreamId`] of a stream with pending data queued, ordered by its priority and recency
 #[derive(Clone, PartialEq, Eq)]
-pub struct PendingStream {
+struct PendingStream {
     /// The priority of the stream
     // Note that this field should be kept above the `recency` field, in order for the `Ord` derive to be correct
     // (See https://doc.rust-lang.org/stable/std/cmp/trait.Ord.html#derivable)
