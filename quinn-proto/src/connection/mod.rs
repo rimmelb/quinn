@@ -3397,8 +3397,6 @@ impl Connection {
             self.stats.frame_tx.new_token += 1;
         }
 
-       // STREAM
-    // STREAM
     // STREAM
         // quinn-proto/src/connection/mod.rs:3403
         if space_id == SpaceId::Data {

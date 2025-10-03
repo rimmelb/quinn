@@ -245,17 +245,10 @@ impl StreamsState {
                 _ => continue, // Skip ha nincs send stream
             };
             
-            // Ha nincs deadline, automatikusan beengedjük
-            let deadline = match send.deadline {
-                Some(dl) => dl,
-                None => {
-                    admitted.insert(stream_id);
-                    continue;
-                }
-            };
-            
             // Lekérjük a pending bytes mennyiségét
             let pending_bytes = send.pending.unacked();
+
+            let deadline = Instant::now();
             
             // Admission check
             if can_admit(stream_id, deadline, pending_bytes) {
@@ -1056,7 +1049,7 @@ impl StreamsState {
             Dir::Bi => self.initial_max_stream_data_bidi_remote,
         }
     }
-    
+
 }
 
 #[inline]
