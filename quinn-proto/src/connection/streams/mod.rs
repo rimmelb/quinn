@@ -449,6 +449,29 @@ impl PendingStreamsQueue {
         self.streams.clear();
     }
 
+    /// Eltávolít egy stream-et a queue-ból ID alapján
+    /// 
+    /// Visszaadja `true`-t, ha a stream megtalálható volt és el lett távolítva
+    pub(super) fn remove(&mut self, id: StreamId) -> bool {
+        // 1. Ellenőrizzük a `next` field-et (az aktívan kiválasztott stream)
+        if let Some(ref next) = self.next {
+            if next.id == id {
+                self.next = None;
+                return true;
+            }
+        }
+
+        // 2. Eltávolítjuk a BinaryHeap-ből
+        // Sajnos a BinaryHeap nem támogatja a közvetlen eltávolítást,
+        // így újra kell építenünk az egész heap-et
+        let original_len = self.streams.len();
+        let streams_vec: Vec<_> = self.streams.drain().filter(|s| s.id != id).collect();
+        self.streams = BinaryHeap::from(streams_vec);
+        
+        // Ha változott a méret, akkor sikeres volt az eltávolítás
+        original_len != self.streams.len()
+    }
+
     // NEW: needed by StreamsState::normalize_pending()
     fn is_empty(&self) -> bool {
         self.next.is_none() && self.streams.is_empty()

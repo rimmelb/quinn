@@ -225,7 +225,7 @@ impl StreamsState {
     /// 
     /// Visszaadja azoknak a stream-eknek az ID-jét, amik átmennek az admission control-on
     pub(crate) fn filter_pending_by_deadline<F>(
-        &self,
+        &mut self,
         mut can_admit: F,
     ) -> std::collections::HashSet<StreamId>
     where
@@ -233,6 +233,7 @@ impl StreamsState {
     {
         use std::collections::HashSet;
         let mut admitted = HashSet::new();
+        let mut to_remove = Vec::new();
 
         for pending_stream in self.pending.streams.iter() {
             let stream_id = pending_stream.id;
@@ -251,6 +252,7 @@ impl StreamsState {
             if can_admit(stream_id, deadline, pending_bytes) {
                 admitted.insert(stream_id);
             } else {
+                to_remove.push(stream_id);
                 trace!(
                     stream = %stream_id,
                     deadline = ?deadline,
@@ -258,7 +260,13 @@ impl StreamsState {
                     "stream filtered out due to deadline"
                 );
             }
+
         }
+        
+        for id in to_remove {
+                self.pending.remove(id);
+        }
+
         admitted
     }
 

@@ -545,9 +545,13 @@ impl Connection {
 
             // --- DEADLINE PRE-ADMISSION GUARD (Data space) ---
             if space_id == SpaceId::Data {
-                let mut admitted_streams = self.streams.filter_pending_by_deadline(
+                let rtt = self.path.rtt.get();
+                let congestion = self.path.congestion.as_ref() as &dyn crate::congestion::Controller;
+                
+                let admitted_streams = self.streams.filter_pending_by_deadline(
                     |_stream_id, deadline, pending_bytes| {
-                        self.can_send_object(pending_bytes, Some(deadline), now)
+                        // FIX: Ne használj self-et közvetlenül!
+                        congestion.can_admit_object(pending_bytes, deadline, now, rtt)
                     }
                 );
 
