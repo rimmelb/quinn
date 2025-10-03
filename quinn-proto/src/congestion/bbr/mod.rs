@@ -599,6 +599,30 @@ impl Controller for Bbr {
         self
     }
 
+    /// Enable or disable the deadline-aware scheduler at runtime
+    /// 
+    /// This allows toggling deadline admission control without recreating the BBR instance
+    fn set_deadline_scheduler(&mut self, enabled: bool) {
+        if let Some(ref mut cfg) = self.deadline_config {
+            cfg.enabled = enabled;
+            tracing::info!(
+                target: "bbr.deadline",
+                enabled,
+                "BBR deadline scheduler enabled flag updated"
+            );
+        } else {
+            // Ha nincs config, hozzunk létre egyet alapértelmezett értékekkel
+            let mut config = DeadlineConfig::default();
+            config.enabled = enabled;
+            self.deadline_config = Some(config);
+            tracing::info!(
+                target: "bbr.deadline",
+                enabled,
+                "BBR deadline scheduler config created with enabled={}", enabled
+            );
+        }
+    }
+
 fn can_admit_object(
     &self,
     object_size: u64,

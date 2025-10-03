@@ -103,6 +103,10 @@ pub trait Controller: Send + Sync {
     ) 
     {
     }
+
+    fn set_deadline_scheduler(&mut self, deadline_scheduler: bool) {       
+    }
+
 }
 
 /// Common congestion controller metrics

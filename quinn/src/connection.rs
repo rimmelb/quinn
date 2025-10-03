@@ -563,6 +563,15 @@ impl Connection {
             .set_deadline(deadline)
     }
 
+
+    pub fn set_deadline_scheduler(&self, deadline_scheduler: bool) {
+        self.0
+            .state
+            .lock("suggest_object_priority")
+            .inner
+            .enable_deadline_scheduler(deadline_scheduler)
+    }
+
     /// Parameters negotiated during the handshake
     ///
     /// Guaranteed to return `Some` on fully established connections or after

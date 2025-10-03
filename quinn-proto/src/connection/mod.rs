@@ -3796,6 +3796,14 @@ impl Connection {
     {  
         self.path.congestion.set_deadline(deadline)
     }
+
+    pub fn enable_deadline_scheduler(&mut self,  
+        deadline_scheduler: bool,
+    ) 
+    {  
+        self.path.congestion.set_deadline_scheduler(deadline_scheduler)
+    }
+
 }
 
 impl fmt::Debug for Connection {
