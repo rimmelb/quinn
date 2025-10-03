@@ -1,6 +1,6 @@
 use std::{
     cmp,
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     convert::TryFrom,
     fmt, io, mem,
     net::{IpAddr, SocketAddr},
@@ -541,15 +541,19 @@ impl Connection {
                 continue;
             }
 
+            let mut admit_streams: HashSet<StreamId> = HashSet::new();
+
             // --- DEADLINE PRE-ADMISSION GUARD (Data space) ---
             if space_id == SpaceId::Data {
-                let admitted_streams = self.streams.filter_pending_by_deadline(
+                let mut admitted_streams = self.streams.filter_pending_by_deadline(
                     |_stream_id, deadline, pending_bytes| {
                         self.can_send_object(pending_bytes, Some(deadline), now)
                     }
                 );
 
-                let have_admitted_streams = !admitted_streams.is_empty();
+                admit_streams = admitted_streams;
+
+                let have_admitted_streams = !admit_streams.is_empty();
 
                 let space = &self.spaces[SpaceId::Data];
                 
@@ -915,7 +919,7 @@ impl Connection {
             }
 
             let sent =
-                self.populate_packet(now, space_id, buf, builder.max_size, builder.exact_number);
+                self.populate_packet(now, space_id, buf, builder.max_size, builder.exact_number, admit_streams);
 
             // ACK-only packets should only be sent when explicitly allowed. If we write them due to
             // any other reason, there is a bug which leads to one component announcing write
@@ -3191,6 +3195,7 @@ impl Connection {
         buf: &mut Vec<u8>,
         max_size: usize,
         pn: u64,
+        admitted_streams: HashSet<StreamId>
     ) -> SentFrames {
         let mut sent = SentFrames::default();
         let space = &mut self.spaces[space_id];
@@ -3439,7 +3444,8 @@ impl Connection {
             sent.stream_frames = self.streams.write_stream_frames(
                 buf, 
                 max_size, 
-                self.config.send_fairness
+                self.config.send_fairness,
+                admitted_streams
             );
 
             self.stats.frame_tx.stream += sent.stream_frames.len() as u64;
