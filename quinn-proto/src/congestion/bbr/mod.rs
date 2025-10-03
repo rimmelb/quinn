@@ -161,29 +161,31 @@ impl Bbr {
     }
 
     #[inline]
-    fn deadline_decay_queue(&self, now: Instant, pps: f64) {
+    fn deadline_decay_queue(&self, now: Instant, pps: f64, use_rtt: Duration) {
         let mut st = self.deadline_state.lock().unwrap();
-        
-        // FIX: Ha nincs még last, inicializáld most-ra
         let last = st.last.unwrap_or(now);
-        
         let dt = now.saturating_duration_since(last).as_secs_f64();
-
-        if dt > 0.0 && pps > 0.0 {
-            // FIX: Ne menjen negatívba
-            let decay = (pps * dt).min(st.q_pkts);
-            st.q_pkts -= decay;
-            
-            tracing::trace!(
-                target: "bbr.deadline",
-                dt_ms=(dt * 1000.0),
-                pps,
-                decay,
-                q_before=st.q_pkts + decay,
-                q_after=st.q_pkts,
-                "virtual queue decay"
-            );
+        if dt <= 0.0 || pps <= 0.0 {
+            return;
         }
+
+        // MAX: csak 1×BDP-nyi időt engedjünk egyszerre "elfolyni" (limitáljuk a burst érzékenységet)
+        let capped_dt = dt.min(use_rtt.as_secs_f64());
+
+        let q_before = st.q_pkts;
+        let decay = (pps * capped_dt).min(st.q_pkts * 0.5); // ne tűnhessen el >50% egy ciklusban
+        st.q_pkts -= decay;
+
+        tracing::trace!(
+            target: "bbr.deadline",
+            dt_ms = (dt*1000.0),
+            capped_dt_ms = (capped_dt*1000.0),
+            pps,
+            decay,
+            q_before,
+            q_after = st.q_pkts,
+            "virtual queue bounded decay"
+        );
     }
 
     fn enter_startup_mode(&mut self) {
@@ -644,19 +646,9 @@ fn can_admit_object(
         return true;
     };
 
-    // **VALÓS RTT** használata (BBR által mért min_rtt)
-    let use_rtt = if self.min_rtt.as_nanos() != 0 { 
-        self.min_rtt 
-    } else { 
-        rtt_hint 
-    };
-    
-    if use_rtt.as_nanos() == 0 {
-        tracing::warn!(target: "bbr.deadline", "no RTT available, rejecting object");
-        return false;
-    }
+    let use_rtt = if self.min_rtt.as_nanos() != 0 { self.min_rtt } else { rtt_hint };
+    if use_rtt.as_nanos() == 0 { return true; } // inkább ne blokkoljunk korán
 
-    // **VALÓS cwnd** (BBR által számolt ablak)
     let cwnd_bytes = self.window();
     
     // **VALÓS bandwidth** (BBR által mért maximális sávszélesség)
@@ -667,21 +659,15 @@ fn can_admit_object(
 
     // Effektív kapacitás: a SZŰK keresztmetszet (minimum)
     let cwnd_rate = (cwnd_bytes as f64 * 8.0) / use_rtt.as_secs_f64();
-    let app_rate = (bw_bytes_per_sec as f64) * 8.0;
+    let app_rate  = (bw_bytes_per_sec as f64) * 8.0;
     let pace_rate = (pacing_bytes_per_sec as f64) * 8.0;
-    
+
     let mut effective_bps = f64::INFINITY;
-    if cwnd_rate > 0.0 { effective_bps = effective_bps.min(cwnd_rate); }
-    if app_rate > 0.0 { effective_bps = effective_bps.min(app_rate); }
-    if pace_rate > 0.0 { effective_bps = effective_bps.min(pace_rate); }
-    
+    for r in [cwnd_rate, app_rate, pace_rate] {
+        if r > 0.0 { effective_bps = effective_bps.min(r); }
+    }
     if !effective_bps.is_finite() || effective_bps <= 0.0 {
-        tracing::debug!(
-            target: "bbr.deadline",
-            cwnd_bytes, bw_bytes_per_sec, pacing_bytes_per_sec,
-            "no positive capacity, rejecting"
-        );
-        return false;
+        return true; // progress guarantee: ne akadjon meg nullás mérésnél
     }
 
     // PPS számítás (konzervatív béta faktorral)
@@ -696,75 +682,62 @@ fn can_admit_object(
     let pps = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
     let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1) as f64;
 
-    // FIX 1: Decay ELŐTT mentsd el az állapotot
-    let (virt_q_before, last_seen) = {
+    // Snapshot + bounded decay
+    let (snapshot_q, snapshot_last) = {
         let st = self.deadline_state.lock().unwrap();
         (st.q_pkts, st.last)
     };
-
-    // FIX 2: Decay után AZONNAL frissítsd a timestamp-et
-    self.deadline_decay_queue(now, pps);
+    self.deadline_decay_queue(now, pps, use_rtt);
     {
         let mut st = self.deadline_state.lock().unwrap();
-        st.last = Some(now);  // <-- MINDIG frissítsd!
+        st.last = Some(now);
     }
 
-    // Stale detection + cap-elés: ne legyen irreális q_pkts
-    let (virt_q_before, last_seen) = {
+    let (virt_q_after_decay, last_seen) = {
         let st = self.deadline_state.lock().unwrap();
         (st.q_pkts, st.last)
     };
 
-    // BDP becslés pkts-ben
     let bdp_pkts = (cwnd_bytes as f64 / mss).max(1.0);
-    // 4×BDP cap (alsó/ felső fizikai korlátokkal a robusztusságért)
     let q_cap = (bdp_pkts * 4.0).clamp(50.0, 10_000.0);
-
-    // Heurisztika: ha régen nyúltunk a sorhoz (≥ 2×RTT) és a backlog nagy,
-    // tekintsük “stale”-nek és vágjuk a cap-re vagy nullára
-    let is_stale = last_seen
-        .map(|t| now.saturating_duration_since(t) > (use_rtt * 2))
-        .unwrap_or(false);
-
-    let virt_q_sanitized = if is_stale && virt_q_before > q_cap {
-        tracing::debug!(
-            target: "bbr.deadline",
-            virt_q_before,
-            q_cap,
-            "resetting stale virtual queue to cap"
-        );
-        q_cap
-    } else {
-        virt_q_before.min(q_cap)
-    };
+    let is_stale = last_seen.map(|t| now.saturating_duration_since(t) > (use_rtt * 2)).unwrap_or(false);
+    let virt_q_sanitized = if is_stale && virt_q_after_decay > q_cap { q_cap } else { virt_q_after_decay.min(q_cap) };
 
     // Transmission time becslés a sanitizált/kapott sorral
     let trans_time = use_rtt / 2 + Duration::from_secs_f64((virt_q_sanitized + pkt_count) / pps);
     let guard = Duration::from_millis(cfg.guard_ms);
 
-    // Globális (connection-szintű) delivery_timeout alapján döntünk
-    // FIX: None esetén ne blokkoljunk (átengedés), hogy toggle ablakokban ne zárjon le a session
-    let admit = match self.delivery_timeout {
-        Some(timeout) => now + trans_time + guard <= timeout,
-        None => true,
-    };
+    // Object deadline alapú döntés
+    let admit_by_deadline = now + trans_time + guard <= deadline;
 
-    // FIX 3: Queue frissítés CSAK admit esetén
-    if admit {
+    // Hard cap: ha van global timeout, az ne engedjen későbbinél tovább
+    if let Some(global) = self.delivery_timeout {
+        if now + trans_time + guard > global {
+            // rollback; reject
+            let mut st = self.deadline_state.lock().unwrap();
+            st.q_pkts = snapshot_q;
+            st.last = snapshot_last;
+            tracing::debug!(target="bbr.deadline", admit=false, reason="global_timeout", virt_q_before=snapshot_q);
+            return false;
+        }
+    }
+
+    if !admit_by_deadline {
+        // rollback
+        let mut st = self.deadline_state.lock().unwrap();
+        st.q_pkts = snapshot_q;
+        st.last = snapshot_last;
+        tracing::debug!(target="bbr.deadline", admit=false, reason="deadline", virt_q_before=snapshot_q);
+        return false;
+    }
+
+    // commit
+    {
         let mut st = self.deadline_state.lock().unwrap();
         st.q_pkts = (virt_q_sanitized + pkt_count).min(q_cap);
     }
-
-    tracing::debug!(
-        target: "bbr.deadline",
-        object_size,
-        virt_q_before=%virt_q_before,
-        virt_q_after=%self.deadline_state.lock().unwrap().q_pkts,
-        admit,
-        "BBR deadline admission check"
-    );
-
-    admit
+    tracing::debug!(target="bbr.deadline", admit=true, virt_q_before=snapshot_q, virt_q_after=self.deadline_state.lock().unwrap().q_pkts);
+    true
 }
     
     fn set_deadline(&mut self, deadline: Option<Instant>) {
