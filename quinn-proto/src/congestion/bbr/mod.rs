@@ -162,14 +162,16 @@ impl Bbr {
 
     #[inline]
     fn deadline_decay_queue(&self, now: Instant, pps: f64) {
-    if pps <= 0.0 { return; }
-    let mut st = self.deadline_state.lock().unwrap();
-    let last = st.last.unwrap_or(now);
-    let dt = now.saturating_duration_since(last).as_secs_f64();
-    if dt > 0.0 {
+        let mut st = self.deadline_state.lock().unwrap();
+        let last = st.last.unwrap_or(now);
+        let dt = now.saturating_duration_since(last).as_secs_f64();
+
+        if dt > 0.0 && pps > 0.0 {
             st.q_pkts = (st.q_pkts - pps * dt).max(0.0);
-            st.last = Some(now);
         }
+
+        // Always advance the clock so subsequent calls can decay
+        st.last = Some(now);
     }
 
     fn enter_startup_mode(&mut self) {
@@ -605,22 +607,18 @@ impl Controller for Bbr {
     fn set_deadline_scheduler(&mut self, enabled: bool) {
         if let Some(ref mut cfg) = self.deadline_config {
             cfg.enabled = enabled;
-            tracing::info!(
-                target: "bbr.deadline",
-                enabled,
-                "BBR deadline scheduler enabled flag updated"
-            );
         } else {
-            // Ha nincs config, hozzunk létre egyet alapértelmezett értékekkel
             let mut config = DeadlineConfig::default();
             config.enabled = enabled;
             self.deadline_config = Some(config);
-            tracing::info!(
-                target: "bbr.deadline",
-                enabled,
-                "BBR deadline scheduler config created with enabled={}", enabled
-            );
         }
+
+        // Reset virtual queue when toggling to avoid stale backlog
+        let mut st = self.deadline_state.lock().unwrap();
+        st.q_pkts = 0.0;
+        st.last = None;
+
+        tracing::info!(target: "bbr.deadline", enabled, "BBR deadline scheduler enabled flag updated");
     }
 
 fn can_admit_object(
@@ -680,23 +678,48 @@ fn can_admit_object(
     let pps = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
     let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1) as f64;
 
-    // Virtuális sor frissítése
+    // Virtuális sor frissítése (lineáris decay)
     self.deadline_decay_queue(now, pps);
-    
-    let virt_q_before = {
+
+    // Stale detection + cap-elés: ne legyen irreális q_pkts
+    let (virt_q_before, last_seen) = {
         let st = self.deadline_state.lock().unwrap();
-        st.q_pkts
+        (st.q_pkts, st.last)
     };
 
-    // Transmission time becslés
-    let trans_time = use_rtt / 2 + Duration::from_secs_f64((virt_q_before + pkt_count) / pps);
+    // BDP becslés pkts-ben
+    let bdp_pkts = (cwnd_bytes as f64 / mss).max(1.0);
+    // 4×BDP cap (alsó/ felső fizikai korlátokkal a robusztusságért)
+    let q_cap = (bdp_pkts * 4.0).clamp(50.0, 10_000.0);
+
+    // Heurisztika: ha régen nyúltunk a sorhoz (≥ 2×RTT) és a backlog nagy,
+    // tekintsük “stale”-nek és vágjuk a cap-re vagy nullára
+    let is_stale = last_seen
+        .map(|t| now.saturating_duration_since(t) > (use_rtt * 2))
+        .unwrap_or(false);
+
+    let virt_q_sanitized = if is_stale && virt_q_before > q_cap {
+        tracing::debug!(
+            target: "bbr.deadline",
+            virt_q_before,
+            q_cap,
+            "resetting stale virtual queue to cap"
+        );
+        q_cap
+    } else {
+        virt_q_before.min(q_cap)
+    };
+
+    // Transmission time becslés a sanitizált/kapott sorral
+    let trans_time = use_rtt / 2 + Duration::from_secs_f64((virt_q_sanitized + pkt_count) / pps);
     let guard = Duration::from_millis(cfg.guard_ms);
-    
+
+    // Globális (connection-szintű) delivery_timeout alapján döntünk
     let admit = self.delivery_timeout.map_or(false, |timeout| now + trans_time + guard <= timeout);
 
     if admit {
         let mut st = self.deadline_state.lock().unwrap();
-        st.q_pkts = virt_q_before + pkt_count;
+        st.q_pkts = (virt_q_sanitized + pkt_count).min(q_cap);
         st.last = Some(now);
     }
 
@@ -706,13 +729,14 @@ fn can_admit_object(
         cwnd_bytes,
         bw_bytes_per_sec,
         pacing_bytes_per_sec,
-        use_rtt = ?use_rtt,
-        effective_bps = %effective_bps,
-        pps = %pps,
-        pkt_count = %pkt_count,
-        virt_q_before = %virt_q_before,
-        trans_time = ?trans_time,
-        guard_ms = cfg.guard_ms,
+        use_rtt=?use_rtt,
+        effective_bps=%effective_bps,
+        pps=%pps,
+        pkt_count=%pkt_count,
+        virt_q_before=%virt_q_before,
+        virt_q_sanitized=%virt_q_sanitized,
+        trans_time=?trans_time,
+        guard_ms=cfg.guard_ms,
         admit,
         "BBR deadline admission check (using REAL BBR values)"
     );
