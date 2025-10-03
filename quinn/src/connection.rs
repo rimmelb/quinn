@@ -555,12 +555,12 @@ impl Connection {
     }
 
     // Optional: add a matching wrapper for the priority suggestion
-    pub fn suggest_object_priority(&self, object_size: u64, deadline: Option<Instant>, now: Instant) -> i32 {
+    pub fn set_deadline(&self, object_size: u64, deadline: Option<Instant>, now: Instant) {
         self.0
             .state
             .lock("suggest_object_priority")
             .inner
-            .suggest_object_priority(object_size, deadline, now)
+            .set_deadline(deadline)
     }
 
     /// Parameters negotiated during the handshake

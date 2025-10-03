@@ -97,14 +97,11 @@ pub trait Controller: Send + Sync {
     }
 
     /// New: suggest priority based on deadline + current network state
-    fn suggest_priority(
-        &self,
-        object_size: u64,
-        deadline: Instant,
-        now: Instant,
-        rtt: Duration,
-    ) -> i32 {
-        0 // Default: highest priority
+    fn set_deadline(
+        &mut self,
+        deadline: Option<Instant>,
+    ) 
+    {
     }
 }
 

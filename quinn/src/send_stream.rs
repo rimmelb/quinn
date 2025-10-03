@@ -230,28 +230,6 @@ impl SendStream {
         conn.inner.send_stream(self.stream).priority()
     }
 
-    /// Set an absolute deadline for the stream (transport-level scheduling hint)
-    ///
-    /// A korábbi adatküldésekhez tartozó priority sorrend (és slack) frissülhet.
-    pub fn set_deadline(&self, deadline: Instant) -> Result<(), ClosedStream> {
-        let mut conn = self.conn.state.lock("SendStream::set_deadline");
-        // Nem minden implementációban elérhető – belső downcast
-        let mut s = conn.inner.send_stream(self.stream);
-        // Ha a proto réteg nem tartalmazza a metódust (régebbi fork), a build úgyis elbukna.
-        s.set_deadline(deadline);
-        Ok(())
-    }
-
-    /// Set slack (ms) for deadline-based scheduling, converting to transport priority.
-    ///
-    /// Negatív vagy 0 slack azonnali (legmagasabb) prioritást eredményez.
-    pub fn set_slack_ms(&self, slack_ms: f64) -> Result<(), ClosedStream> {
-        let mut conn = self.conn.state.lock("SendStream::set_slack_ms");
-        let mut s = conn.inner.send_stream(self.stream);
-        s.set_slack_ms(slack_ms);
-        Ok(())
-    }
-
     /// Completes when the peer stops the stream or reads the stream to completion
     ///
     /// Yields `Some` with the stop error code if the peer stops the stream. Yields `None` if the

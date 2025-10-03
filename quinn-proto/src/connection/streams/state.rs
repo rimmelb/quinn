@@ -221,6 +221,43 @@ impl StreamsState {
         self.max_remote[dir as usize] += new_count;
     }
 
+    /// Előszűri a pending stream-eket deadline alapján
+    /// 
+    /// Visszaadja azoknak a stream-eknek az ID-jét, amik átmennek az admission control-on
+    pub(crate) fn filter_pending_by_deadline<F>(
+        &self,
+        mut can_admit: F,
+    ) -> Vec<StreamId>
+    where
+        F: FnMut(StreamId, Instant, u64) -> bool,
+    {
+        self.pending.iter()
+            .filter_map(|pending_stream| {
+                let stream_id = pending_stream.id;
+                
+                // Lekérjük a stream adatait
+                let send = self.send.get(&stream_id)?.as_ref()?;
+                
+                // Ha nincs deadline, mindig átmegy
+                let deadline = send.deadline?;
+                let pending_bytes = send.pending.unacked();
+                
+                // Admission check
+                if can_admit(stream_id, deadline, pending_bytes) {
+                    Some(stream_id)
+                } else {
+                    trace!(
+                        stream = %stream_id,
+                        deadline = ?deadline,
+                        pending_bytes,
+                        "stream filtered out due to deadline"
+                    );
+                    None
+                }
+            })
+            .collect()
+    }
+
     pub(crate) fn zero_rtt_rejected(&mut self) {
         // Revert to initial state for outgoing streams
         for dir in Dir::iter() {

@@ -59,6 +59,7 @@ pub struct Bbr {
     round_wo_bw_gain: u64,
     ack_aggregation: AckAggregationState,
     random_number_generator: rand::rngs::StdRng,
+    delivery_timeout: Option<Instant>,
 
     /// Deadline scheduler configuration
     deadline_config: Option<DeadlineConfig>,
@@ -153,7 +154,7 @@ impl Bbr {
             ack_aggregation: AckAggregationState::default(),
             deadline_config, // <-- FIX: take from BbrConfig
             random_number_generator: rand::rngs::StdRng::from_os_rng(),
-
+            delivery_timeout: None,
             // NEW:
             deadline_state: Arc::new(Mutex::new(DeadlineState::default())),
         }
@@ -172,13 +173,6 @@ impl Bbr {
     }
 
     fn enter_startup_mode(&mut self) {
-        if self.config.fixed_pacing_bps.is_some() {
-        // FIXED PACING: ne legyen “Startup-boost”, álljunk be cruisera
-        self.mode = Mode::ProbeBw;
-        self.pacing_gain = 1.0;
-        self.cwnd_gain = 1.0;
-        return;
-        }
         self.mode = Mode::Startup;
         self.pacing_gain = self.high_gain;
         self.cwnd_gain = self.high_cwnd_gain;
@@ -233,13 +227,6 @@ impl Bbr {
     }
 
     fn update_gain_cycle_phase(&mut self, now: Instant, in_flight: u64) {
-
-        // FIXED PACING: ne ciklussal “hintázzon” a gain — maradjon 1.0
-        if self.config.fixed_pacing_bps.is_some() {
-        self.pacing_gain = 1.0;
-        // de állapotgépet nem piszkáljuk, csak nem léptetünk ciklust
-        return;
-        }
         // In most cases, the cycle is advanced after an RTT passes.
         let mut should_advance_gain_cycling = self
             .last_cycle_start
@@ -361,15 +348,6 @@ impl Bbr {
     }
 
 fn calculate_pacing_rate(&mut self) {
-    // FIXED PACING: ha be van állítva, közvetlenül ebből számolunk byte/s tempót
-    if let Some(bps) = self.config.fixed_pacing_bps {
-        // byte/s (metrics() majd *8-cal visszaadja bit/s-ban)
-        self.pacing_rate = (bps / 8).max(1);
-        // ne moduláljunk gain-nel fix módban
-        self.pacing_gain = 1.0;
-        return;
-    }
-
     // --- Eredeti BBR logika (fallback) ---
     let bw = self.max_bandwidth.get_estimate();
     if bw == 0 {
@@ -416,17 +394,6 @@ fn calculate_pacing_rate(&mut self) {
     fn calculate_cwnd(&mut self, bytes_acked: u64, excess_acked: u64) {
         if self.mode == Mode::ProbeRtt {
             return;
-        }
-        if let Some(bps) = self.config.fixed_pacing_bps {
-        if self.min_rtt.as_nanos() != 0 {
-            // cap-hez illesztett BDP: bytes = bps * RTT / 8
-            let win_bytes = ((bps as f64) * self.min_rtt.as_secs_f64() / 8.0) as u64;
-            self.cwnd = win_bytes.max(self.min_cwnd);
-        } else {
-            // amíg nincs RTT, tartsd kicsiben (pl. min_cwnd), hogy ne burstöljön
-            self.cwnd = self.min_cwnd;
-        }
-        return; // ne növeljük tovább ACK-re
         }
 
         let mut target_window = self.get_target_cwnd(self.cwnd_gain);
@@ -605,13 +572,6 @@ impl Controller for Bbr {
     if self.mode == Mode::ProbeRtt {
         return self.get_probe_rtt_cwnd();
     }
-    if let Some(bps) = self.config.fixed_pacing_bps {
-        if self.min_rtt.as_nanos() != 0 {
-            let win_bytes = ((bps as f64) * self.min_rtt.as_secs_f64() / 8.0) as u64;
-            return win_bytes.max(self.min_cwnd);
-        }
-        return self.min_cwnd;
-    }
     if self.recovery_state.in_recovery() && self.mode != Mode::Startup {
         return self.cwnd.min(self.recovery_window);
     }
@@ -646,153 +606,100 @@ fn can_admit_object(
     now: Instant,
     rtt_hint: Duration,
 ) -> bool {
-    // Config értékek kimásolása (ne tartsunk kölcsönt a későbbi lockig)
-    let (enabled, beta, guard_ms, default_mss) = match self.deadline_config.as_ref() {
-        Some(dc) => (dc.enabled, dc.beta, dc.guard_ms, dc.default_mss),
-        None => (false, 0.0, 0, 1200),
-    };
-    if !enabled {
+    // Config check
+    let Some(cfg) = self.deadline_config.as_ref().filter(|c| c.enabled) else {
         return true;
-    }
+    };
 
-    // RTT padlóval
-    let mut use_rtt = if self.min_rtt.as_nanos() != 0 { self.min_rtt } else { rtt_hint };
-    let rtt_floor = Duration::from_millis(5);
-    if use_rtt < rtt_floor { use_rtt = rtt_floor; }
+    // **VALÓS RTT** használata (BBR által mért min_rtt)
+    let use_rtt = if self.min_rtt.as_nanos() != 0 { 
+        self.min_rtt 
+    } else { 
+        rtt_hint 
+    };
+    
     if use_rtt.as_nanos() == 0 {
-        tracing::debug!(
-            target: "bbr.deadline",
-            object_size,
-            min_rtt = ?self.min_rtt,
-            rtt_hint = ?rtt_hint,
-            "admit: no usable RTT (both zero) -> false"
-        );
+        tracing::warn!(target: "bbr.deadline", "no RTT available, rejecting object");
         return false;
     }
 
-    // Effektív bps (a szűk komponens)
-    let app_bps  = (self.max_bandwidth.get_estimate() as f64) * 8.0;
-    let cwnd_bps = (self.cwnd as f64 * 8.0) / use_rtt.as_secs_f64();
-    let pace_bps = (self.pacing_rate as f64) * 8.0;
+    // **VALÓS cwnd** (BBR által számolt ablak)
+    let cwnd_bytes = self.window();
+    
+    // **VALÓS bandwidth** (BBR által mért maximális sávszélesség)
+    let bw_bytes_per_sec = self.max_bandwidth.get_estimate();
+    
+    // **VALÓS pacing rate** (BBR által számolt tempó)
+    let pacing_bytes_per_sec = self.pacing_rate;
 
+    // Effektív kapacitás: a SZŰK keresztmetszet (minimum)
+    let cwnd_rate = (cwnd_bytes as f64 * 8.0) / use_rtt.as_secs_f64();
+    let app_rate = (bw_bytes_per_sec as f64) * 8.0;
+    let pace_rate = (pacing_bytes_per_sec as f64) * 8.0;
+    
     let mut effective_bps = f64::INFINITY;
-    if cwnd_bps.is_finite() && cwnd_bps > 0.0 { effective_bps = effective_bps.min(cwnd_bps); }
-    if app_bps.is_finite()  && app_bps  > 0.0 { effective_bps = effective_bps.min(app_bps); }
-    if pace_bps.is_finite() && pace_bps > 0.0 { effective_bps = effective_bps.min(pace_bps); }
-
+    if cwnd_rate > 0.0 { effective_bps = effective_bps.min(cwnd_rate); }
+    if app_rate > 0.0 { effective_bps = effective_bps.min(app_rate); }
+    if pace_rate > 0.0 { effective_bps = effective_bps.min(pace_rate); }
+    
     if !effective_bps.is_finite() || effective_bps <= 0.0 {
         tracing::debug!(
             target: "bbr.deadline",
-            object_size,
-            bw_estimate_bytes_per_s = self.max_bandwidth.get_estimate(),
-            cwnd_bytes = self.cwnd,
-            min_rtt = ?self.min_rtt,
-            use_rtt = ?use_rtt,
-            %app_bps, %cwnd_bps, %pace_bps,
-            "admit: no positive capacity component -> false"
+            cwnd_bytes, bw_bytes_per_sec, pacing_bytes_per_sec,
+            "no positive capacity, rejecting"
         );
         return false;
     }
 
-    // MPR paraméterek
-    let mss = default_mss as f64;
-    let pps = (effective_bps / 8.0 / mss).max(1.0) * beta; // konzervatív
-    let pkt_num = ((object_size + default_mss as u64 - 1) / default_mss as u64).max(1) as f64;
+    // PPS számítás (konzervatív béta faktorral)
+    let mss = cfg.default_mss as f64;
+    let pps = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
+    let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1) as f64;
 
-    // Sor öregítése
+    // Virtuális sor frissítése
     self.deadline_decay_queue(now, pps);
-
-    // q állapot kiolvasása (rövid lock)
+    
     let virt_q_before = {
         let st = self.deadline_state.lock().unwrap();
         st.q_pkts
     };
 
-    // trans_time = RTT/2 + (q + pktNum)/pps
-    let trans_time = use_rtt / 2 + Duration::from_secs_f64((virt_q_before + pkt_num) / pps);
-
-    let guard = Duration::from_millis(guard_ms);
-    let admit = now + trans_time + guard <= deadline;
+    // Transmission time becslés
+    let trans_time = use_rtt / 2 + Duration::from_secs_f64((virt_q_before + pkt_count) / pps);
+    let guard = Duration::from_millis(cfg.guard_ms);
+    
+    let admit = self.delivery_timeout.map_or(false, |timeout| now + trans_time + guard <= timeout);
 
     if admit {
-        // vízbetöltés: q += pktNum (rövid lock)
         let mut st = self.deadline_state.lock().unwrap();
-        st.q_pkts = virt_q_before + pkt_num;
+        st.q_pkts = virt_q_before + pkt_count;
         st.last = Some(now);
     }
-
-    // Diagnosztika – virt_q_after kiolvasása külön (rövid lock)
-    let virt_q_after = {
-        let st = self.deadline_state.lock().unwrap();
-        st.q_pkts
-    };
 
     tracing::debug!(
         target: "bbr.deadline",
         object_size,
-        bw_estimate_bytes_per_s = self.max_bandwidth.get_estimate(),
-        cwnd_bytes = self.cwnd,
-        min_rtt = ?self.min_rtt,
+        cwnd_bytes,
+        bw_bytes_per_sec,
+        pacing_bytes_per_sec,
         use_rtt = ?use_rtt,
-        app_bps = %app_bps,
-        cwnd_bps = %cwnd_bps,
-        pace_bps = %pace_bps,
         effective_bps = %effective_bps,
-        mss = %mss,
-        beta = %beta,
         pps = %pps,
-        pkt_num = %pkt_num,
+        pkt_count = %pkt_count,
         virt_q_before = %virt_q_before,
-        virt_q_after  = %virt_q_after,
         trans_time = ?trans_time,
-        guard_ms = guard_ms,
-        now = ?now,
-        deadline = ?deadline,
+        guard_ms = cfg.guard_ms,
         admit,
-        "BBR single-path deadline admission (water-filling)"
+        "BBR deadline admission check (using REAL BBR values)"
     );
 
     admit
 }
-
     
-    fn suggest_priority(&self, 
-        object_size: u64, 
-        deadline: Instant, 
-        now: Instant,
-        rtt: Duration
-    ) -> i32 {
-        let Some(cfg) = self.deadline_config.as_ref().filter(|c| c.enabled) else {
-            return 0;
-        };
-        
-        // Slack számítás
-        let app_bps = self.max_bandwidth.get_estimate() as f64;
-        let cwnd_bps = (self.cwnd * 8) as f64 / rtt.as_secs_f64();
-        let effective_bps = app_bps.min(cwnd_bps);
+    fn set_deadline(&mut self, deadline: Option<Instant>) {
+            self.delivery_timeout = deadline
+        }
 
-        let mss = cfg.default_mss as f64;
-        let pps = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
-        let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1);
-        let guard = Duration::from_millis(cfg.guard_ms);
-        
-        let slack = (deadline - (now + rtt / 2)).as_secs_f64() 
-                   - (pkt_count as f64) / pps 
-                   - guard.as_secs_f64();
-        
-        slack_to_priority(slack * 1000.0) // Convert to ms
-    }
-}
-
-fn slack_to_priority(slack_ms: f64) -> i32 {
-    if !slack_ms.is_finite() { return 127; }
-    if slack_ms <= 0.0 { return 0; }
-    if slack_ms < 50.0 { return 8; }
-    if slack_ms < 100.0 { return 16; }
-    if slack_ms < 250.0 { return 32; }
-    if slack_ms < 500.0 { return 64; }
-    if slack_ms < 1000.0 { return 96; }
-    127
 }
 
 /// Configuration for the [`Bbr`] congestion controller
@@ -801,8 +708,6 @@ pub struct BbrConfig {
     initial_window: u64,
     min_pacing_bps: u64,
     deadline: Option<DeadlineConfig>,
-    // FIX: optional fixed pacing in bits/s
-    fixed_pacing_bps: Option<u64>,
 }
 
 impl BbrConfig {
@@ -811,15 +716,6 @@ impl BbrConfig {
     /// Recommended value: `min(10 * max_datagram_size, max(2 * max_datagram_size, 14720))`
     pub fn initial_window(&mut self, value: u64) -> &mut Self {
         self.initial_window = value;
-        self
-    }
-   
-    /// For testing purposes only. If set to a non-zero value, this will
-    /// enforce a minimum pacing rate in bits per second.
-    pub fn min_pacing_bps(&mut self, v: u64) -> &mut Self { self.min_pacing_bps = v; self }
-
-    pub fn fixed_pacing_bps(mut self, bps: u64) -> Self {
-        self.fixed_pacing_bps = Some(bps);
         self
     }
 
@@ -855,8 +751,6 @@ impl Default for BbrConfig {
             initial_window: K_MAX_INITIAL_CONGESTION_WINDOW * BASE_DATAGRAM_SIZE,
             min_pacing_bps: 0,
             deadline: None,
-            // FIX: default disabled
-            fixed_pacing_bps: None,
         }
     }
 }

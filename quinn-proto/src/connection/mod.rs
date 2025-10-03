@@ -3396,16 +3396,27 @@ impl Connection {
             self.stats.frame_tx.new_token += 1;
         }
 
-        // STREAM
-        if space_id == SpaceId::Data {
-            sent.stream_frames =
-                self.streams
-                    .write_stream_frames(buf, max_size, self.config.send_fairness);
+       // STREAM
+    if space_id == SpaceId::Data {
+        // 🆕 Előszűrés deadline alapján
+        let admitted_streams = self.streams.filter_pending_by_deadline(
+            |_stream_id, deadline, pending_bytes| {
+                self.can_send_object(pending_bytes, Some(deadline), now)
+            }
+        );
+        
+        // Ha van engedélyezett stream, írjuk ki őket
+        if !admitted_streams.is_empty() {
+            sent.stream_frames = self.streams.write_stream_frames(
+                buf, 
+                max_size, 
+                self.config.send_fairness
+            );
             self.stats.frame_tx.stream += sent.stream_frames.len() as u64;
         }
-
-        sent
     }
+        sent
+}
 
     /// Write pending ACKs into a buffer
     ///
@@ -3777,16 +3788,12 @@ impl Connection {
         self.path.congestion.can_admit_object(object_size, deadline, now, rtt)
     }
     
-    /// New: get priority suggestion for object
-    pub fn suggest_object_priority(&self, 
-        object_size: u64, 
+    /// New: delivery_timeout setter for congestion
+    pub fn set_deadline(&mut self,  
         deadline: Option<Instant>,
-        now: Instant  // FIX: Add now parameter instead of self.timers.now()
-    ) -> i32 {
-        let Some(deadline) = deadline else { return 0; };
-        let rtt = self.path.rtt.get();
-        
-        self.path.congestion.suggest_priority(object_size, deadline, now, rtt)
+    ) 
+    {  
+        self.path.congestion.set_deadline(deadline)
     }
 }
 
