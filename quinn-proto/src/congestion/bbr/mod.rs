@@ -635,10 +635,11 @@ impl Controller for Bbr {
         tracing::info!(target: "bbr.deadline", enabled, "BBR deadline scheduler enabled flag updated");
     }
 
+// ...existing code...
 fn can_admit_object(
     &self,
     object_size: u64,
-    deadline: Instant,
+    object_deadline: Instant,
     now: Instant,
     rtt_hint: Duration,
 ) -> bool {
@@ -647,17 +648,12 @@ fn can_admit_object(
     };
 
     let use_rtt = if self.min_rtt.as_nanos() != 0 { self.min_rtt } else { rtt_hint };
-    if use_rtt.as_nanos() == 0 { return true; } // inkább ne blokkoljunk korán
+    if use_rtt.as_nanos() == 0 { return true; }
 
     let cwnd_bytes = self.window();
-    
-    // **VALÓS bandwidth** (BBR által mért maximális sávszélesség)
     let bw_bytes_per_sec = self.max_bandwidth.get_estimate();
-    
-    // **VALÓS pacing rate** (BBR által számolt tempó)
     let pacing_bytes_per_sec = self.pacing_rate;
 
-    // Effektív kapacitás: a SZŰK keresztmetszet (minimum)
     let cwnd_rate = (cwnd_bytes as f64 * 8.0) / use_rtt.as_secs_f64();
     let app_rate  = (bw_bytes_per_sec as f64) * 8.0;
     let pace_rate = (pacing_bytes_per_sec as f64) * 8.0;
@@ -667,15 +663,11 @@ fn can_admit_object(
         if r > 0.0 { effective_bps = effective_bps.min(r); }
     }
     if !effective_bps.is_finite() || effective_bps <= 0.0 {
-        return true; // progress guarantee: ne akadjon meg nullás mérésnél
+        return true;
     }
 
-    // PPS számítás (konzervatív béta faktorral)
     let mss = cfg.default_mss as f64;
-
-    // FIX: apró kontroll objektumok mindig átengedve
     if object_size <= (2 * cfg.default_mss) as u64 {
-        tracing::trace!(target: "bbr.deadline", object_size, "admit small/control object bypass");
         return true;
     }
 
@@ -703,31 +695,32 @@ fn can_admit_object(
     let is_stale = last_seen.map(|t| now.saturating_duration_since(t) > (use_rtt * 2)).unwrap_or(false);
     let virt_q_sanitized = if is_stale && virt_q_after_decay > q_cap { q_cap } else { virt_q_after_decay.min(q_cap) };
 
-    // Transmission time becslés a sanitizált/kapott sorral
     let trans_time = use_rtt / 2 + Duration::from_secs_f64((virt_q_sanitized + pkt_count) / pps);
     let guard = Duration::from_millis(cfg.guard_ms);
 
-    // Object deadline alapú döntés
-    let admit_by_deadline = now + trans_time + guard <= deadline;
+    // FIX: Global timeout az elsődleges (ha van)
+    let effective_deadline = match self.delivery_timeout {
+        Some(global) => global,  // Global timeout felülírja az object deadline-t
+        None => object_deadline, // Ha nincs global, akkor az object deadline számít
+    };
 
-    // Hard cap: ha van global timeout, az ne engedjen későbbinél tovább
-    if let Some(global) = self.delivery_timeout {
-        if now + trans_time + guard > global {
-            // rollback; reject
-            let mut st = self.deadline_state.lock().unwrap();
-            st.q_pkts = snapshot_q;
-            st.last = snapshot_last;
-            tracing::debug!(target="bbr.deadline", admit=false, reason="global_timeout", virt_q_before=snapshot_q);
-            return false;
-        }
-    }
+    let admit = now + trans_time + guard <= effective_deadline;
 
-    if !admit_by_deadline {
+    if !admit {
         // rollback
         let mut st = self.deadline_state.lock().unwrap();
         st.q_pkts = snapshot_q;
         st.last = snapshot_last;
-        tracing::debug!(target="bbr.deadline", admit=false, reason="deadline", virt_q_before=snapshot_q);
+        tracing::debug!(
+            target="bbr.deadline", 
+            admit=false, 
+            reason="deadline_exceeded",
+            global_timeout=?self.delivery_timeout,
+            object_deadline=?object_deadline,
+            effective_deadline=?effective_deadline,
+            needed_time_ms=((trans_time + guard).as_micros() as f64 / 1000.0),
+            virt_q_before=snapshot_q
+        );
         return false;
     }
 
@@ -736,9 +729,18 @@ fn can_admit_object(
         let mut st = self.deadline_state.lock().unwrap();
         st.q_pkts = (virt_q_sanitized + pkt_count).min(q_cap);
     }
-    tracing::debug!(target="bbr.deadline", admit=true, virt_q_before=snapshot_q, virt_q_after=self.deadline_state.lock().unwrap().q_pkts);
+    tracing::debug!(
+        target="bbr.deadline", 
+        admit=true, 
+        global_timeout=?self.delivery_timeout,
+        object_deadline=?object_deadline,
+        effective_deadline=?effective_deadline,
+        virt_q_before=snapshot_q, 
+        virt_q_after=self.deadline_state.lock().unwrap().q_pkts
+    );
     true
 }
+
     
     fn set_deadline(&mut self, deadline: Option<Instant>) {
             self.delivery_timeout = deadline

@@ -613,12 +613,6 @@ impl StreamsState {
             // FIX: Deadline admission ellenőrzés
             if !admitted_streams.contains(&stream.id) {
                 trace!(stream = %stream.id, "skipping non-admitted stream");
-                // Visszateszünk a queue-ba, hogy később újra próbálkozhassunk
-                let priority = self.send.get(&stream.id)
-                    .and_then(|s| s.as_ref())
-                    .map(|s| s.priority)
-                    .unwrap_or(0);
-                self.pending.push_pending(stream.id, priority, stream.deadline);
                 continue;
             }
         
