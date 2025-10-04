@@ -560,17 +560,28 @@ impl Connection {
 
                     // Liveness fallback
                     if admit_streams.is_empty() {
-                        if let Some(sid) = self.streams.first_pending_with_bytes() {
-                            trace!(stream=%sid, "deadline fallback force-admit");
-                            admit_streams.insert(sid);
+                    // Van-e legalább egy stream bájtokkal?
+                    let pending_with_bytes: Vec<_> = self.streams.iter_pending_with_bytes().collect();
+                    if !pending_with_bytes.is_empty() {
+                        // Instrumentáció: miért lett minden elutasítva — már logoltuk a filterben
+                        tracing::warn!(
+                            target="bbr.deadline",
+                            count=pending_with_bytes.len(),
+                            ?pending_with_bytes,
+                            "all_streams_rejected_force_admit"
+                        );
+                        // Kényszerített beengedés: engedjük mindet (minimális liveness garancia)
+                        for (sid, _) in &pending_with_bytes {
+                            admit_streams.insert(*sid);
                         }
                     }
+                }
 
-                    // Ha TOVÁBBRA IS üres: kikapcsoljuk a stream send-et
-                    if admit_streams.is_empty() {
-                        tracing::debug!(target="bbr.deadline", "no streams passed admission → disabling can_send.other");
-                        can_send.other = false;
-                    }
+                if admit_streams.is_empty() {
+                    // Tényleg nincs küldhető adat (flow control vagy semmi), ekkor kapcsolhatjuk le
+                    tracing::debug!(target="bbr.deadline", "no streams passed admission → disabling can_send.other");
+                    can_send.other = false;
+                }
                 } else {
                     can_send.other = false;
                 }

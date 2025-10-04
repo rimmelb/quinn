@@ -225,53 +225,48 @@ impl StreamsState {
     /// 
     /// Visszaadja azoknak a stream-eknek az ID-jét, amik átmennek az admission control-on
     pub(crate) fn filter_pending_by_deadline<F>(
-    &self,
-    mut can_admit: F,
+        &self,
+        mut can_admit: F,
     ) -> std::collections::HashSet<StreamId>
     where
         F: FnMut(StreamId, Instant, u64) -> bool,
     {
         use std::collections::HashSet;
         let mut admitted = HashSet::new();
-
         for pending_stream in self.pending.iter() {
             let stream_id = pending_stream.id;
-
             let send = match self.send.get(&stream_id) {
-                Some(Some(send)) => send,
+                Some(Some(s)) => s,
                 _ => continue,
             };
-
             let pending_bytes = send.pending.unacked();
             if pending_bytes == 0 {
-                // Nincs ténylegesen küldhető adat → ne próbáld admission-be tenni
                 continue;
             }
-
-            let dummy_deadline = Instant::now() + std::time::Duration::from_secs(3600);
-
-            let pending_bytes = send.pending.unacked();
-
+            let now = Instant::now();
+            // Ha lesz per-stream deadline később: send.deadline.or(pending_stream.deadline)
+            let dummy_deadline = now + std::time::Duration::from_secs(3600);
             if can_admit(stream_id, dummy_deadline, pending_bytes) {
-                // tracing::debug!(
-                //     target="bbr.deadline",
-                //     stream_id=?stream_id,
-                // );
                 admitted.insert(stream_id);
+            } else {
+                tracing::debug!(
+                    target="bbr.deadline",
+                    stream_id=?stream_id,
+                    pending_bytes,
+                    "admission_reject"
+                );
             }
         }
         admitted
     }
 
-    pub(crate) fn first_pending_with_bytes(&self) -> Option<StreamId> {
-        for e in self.pending.iter() {
-            if let Some(Some(send)) = self.send.get(&e.id) {
-                if send.pending.unacked() > 0 {
-                    return Some(e.id);
-                }
-            }
-        }
-        None
+    pub(crate) fn iter_pending_with_bytes(&self) -> impl Iterator<Item=(StreamId,u64)> + '_ {
+        self.pending.iter().filter_map(|e| {
+            self.send.get(&e.id)
+                .and_then(|s| s.as_ref())
+                .map(|snd| (e.id, snd.pending.unacked()))
+                .filter(|(_, b)| *b > 0)
+        })
     }
 
     pub(crate) fn zero_rtt_rejected(&mut self) {
