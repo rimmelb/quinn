@@ -234,7 +234,7 @@ impl StreamsState {
         use std::collections::HashSet;
         let mut admitted = HashSet::new();
 
-        for pending_stream in self.pending.streams.iter() {
+        for pending_stream in self.pending.iter() {
             let stream_id = pending_stream.id;
 
             let send = match self.send.get(&stream_id) {
@@ -264,7 +264,7 @@ impl StreamsState {
     }
 
     pub(crate) fn first_pending_with_bytes(&self) -> Option<StreamId> {
-        for e in self.pending.streams.iter() {
+        for e in self.pending.iter() {
             if let Some(Some(send)) = self.send.get(&e.id) {
                 if send.pending.unacked() > 0 {
                     return Some(e.id);
