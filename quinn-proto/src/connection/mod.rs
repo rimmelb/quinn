@@ -582,7 +582,8 @@ impl Connection {
                     tracing::debug!(target="bbr.deadline", "no streams passed admission → disabling can_send.other");
                     can_send.other = false;
                 }
-                } else {
+                } 
+                else {
                     can_send.other = false;
                 }
             }
