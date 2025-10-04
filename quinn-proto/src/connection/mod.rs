@@ -576,7 +576,7 @@ impl Connection {
 
                     admit_streams = admitted;
 
-                    tracing::debug!(target="bbr.deadline", ?admit_streams);
+                    //tracing::debug!(target="bbr.deadline", ?admit_streams);
 
                     // Liveness fallback
                     if admit_streams.is_empty() {
