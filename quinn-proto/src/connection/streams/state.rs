@@ -248,11 +248,11 @@ impl StreamsState {
                 continue;
             }
 
-            let deadline = Instant::now();
+            let dummy_deadline = Instant::now() + std::time::Duration::from_secs(3600);
 
             let pending_bytes = send.pending.unacked();
 
-            if can_admit(stream_id, deadline, pending_bytes) {
+            if can_admit(stream_id, dummy_deadline, pending_bytes) {
                 // tracing::debug!(
                 //     target="bbr.deadline",
                 //     stream_id=?stream_id,
@@ -621,12 +621,6 @@ impl StreamsState {
             let Some(mut stream) = self.pending.pop() else {
                 break;
             };
-
-            if admitted_streams.is_empty() {
-            tracing::debug!(target="bbr.deadline", "no admitted streams — performing soft reset of pending queue");
-            self.normalize_pending();
-            break;
-            }
 
             // Ha nem admitted: visszatesszük (NEM töröljük!)
         if !admitted_streams.contains(&stream.id) {

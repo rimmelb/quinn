@@ -671,8 +671,7 @@ fn can_admit_object(
         return true;
     }
 
-    let pps = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
-    let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1) as f64;
+    let pps: f64 = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
 
     // Snapshot + bounded decay
     let (snapshot_q, snapshot_last) = {
