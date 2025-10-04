@@ -535,7 +535,7 @@ impl Connection {
                 segment_size.saturating_sub(self.predict_1rtt_overhead(Some(pn)));
 
             // Is there data or a close message to send in this space?
-            let can_send = self.space_can_send(space_id, frame_space_1rtt);
+            let mut can_send = self.space_can_send(space_id, frame_space_1rtt);
             if can_send.is_empty() && (!close || self.spaces[space_id].crypto.is_none()) {
                 space_idx += 1;
                 continue;
@@ -563,42 +563,38 @@ impl Connection {
                 );
 
 
-                if space_id == SpaceId::Data {
-                if admit_streams.is_empty() && self.streams.can_send_stream_data() {
-                    if let Some(sid) = self.streams.first_pending_with_bytes() {
-                        trace!(stream=%sid, "deadline fallback force-admit");
-                        admit_streams.insert(sid);
+                if space_id == SpaceId::Data && can_send.other {
+                if self.streams.can_send_stream_data() {
+                    let rtt = self.path.rtt.get();
+                    let congestion = self.path.congestion.as_ref() as &dyn crate::congestion::Controller;
+
+                    let admitted = self.streams.filter_pending_by_deadline(
+                        |_stream_id, deadline, pending_bytes| {
+                            congestion.can_admit_object(pending_bytes, deadline, now, rtt)
+                        }
+                    );
+
+                    admit_streams = admitted;
+
+                    tracing::debug!(target="bbr.deadline", ?admit_streams);
+
+                    // Liveness fallback
+                    if admit_streams.is_empty() {
+                        if let Some(sid) = self.streams.first_pending_with_bytes() {
+                            trace!(stream=%sid, "deadline fallback force-admit");
+                            admit_streams.insert(sid);
+                        }
                     }
-                }
-                }
 
-                let have_admitted_streams = !admit_streams.is_empty();
-
-                let space = &self.spaces[SpaceId::Data];
-                
-                // FIX: Különbséget teszünk ACK és egyéb control frame-ek között
-                let have_acks = !space.pending_acks.ranges().is_empty();
-                let have_ping = space.ping_pending || space.immediate_ack_pending;
-                
-                let have_other_non_ack = self.path.challenge.is_some()
-                    || !self.path_responses.is_empty()
-                    || !space.pending.new_cids.is_empty()
-                    || !space.pending.retire_cids.is_empty()
-                    || !space.pending.new_tokens.is_empty()
-                    || space.pending.ack_frequency
-                    || self.datagrams.outgoing.front().is_some();
-
-                // FIX: Ha van ACK/PING, akkor mindig engedjük a packet-et
-                // Csak akkor skip-eljünk, ha SEMMI sincs
-                if !have_admitted_streams 
-                    && !have_other_non_ack 
-                    && !have_acks
-                    && !have_ping
-                {
-                    trace!("skip Data space: no admitted streams, no ACK/PING, no other work");
-                    space_idx += 1;
-                    continue;
+                    // Ha TOVÁBBRA IS üres: kikapcsoljuk a stream send-et
+                    if admit_streams.is_empty() {
+                        tracing::debug!(target="bbr.deadline", "no streams passed admission → disabling can_send.other");
+                        can_send.other = false;
+                    }
+                } else {
+                    can_send.other = false;
                 }
+            }
             }
 
             let mut ack_eliciting = !self.spaces[space_id].pending.is_empty(&self.streams)

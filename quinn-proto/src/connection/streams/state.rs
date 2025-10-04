@@ -628,22 +628,14 @@ impl StreamsState {
             break;
             }
 
-            // FIX: Deadline admission ellenőrzés
-            if !admitted_streams.contains(&stream.id) {
+            // Ha nem admitted: visszatesszük (NEM töröljük!)
+        if !admitted_streams.contains(&stream.id) {
             trace!(stream = %stream.id, "deferring non-admitted stream");
-
-            tracing::debug!(
-                    target="bbr.deadline",
-                    admitted_streams=?admitted_streams,
-                );
-            
-            // FIX: Visszatesszük (nem töröljük!)
             if let Some(send) = self.send.get(&stream.id).and_then(|s| s.as_ref()) {
                 self.pending.push_pending(stream.id, send.priority, send.deadline);
             }
-            
             continue;
-            }
+        }
                 
             // Priority dirty check
             let mut requeue_priority: Option<i32> = None;
