@@ -622,6 +622,12 @@ impl StreamsState {
                 break;
             };
 
+            if admitted_streams.is_empty() {
+            tracing::debug!(target="bbr.deadline", "no admitted streams — performing soft reset of pending queue");
+            self.normalize_pending();
+            break;
+            }
+
             // FIX: Deadline admission ellenőrzés
             if !admitted_streams.contains(&stream.id) {
             trace!(stream = %stream.id, "deferring non-admitted stream");
