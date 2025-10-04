@@ -563,12 +563,13 @@ impl Connection {
                 );
 
 
-                if space_id == SpaceId::Data && !self.streams.can_send_stream_data() {
-                // Ha nincs ténylegesen küldhető stream frame (pl. minden szűrve lett),
-                // ne építsünk üres packetet ami 'other=true' státuszt sugall.
-                // Lépjünk tovább a következő space-re.
-                space_idx += 1;
-                continue;
+                if space_id == SpaceId::Data {
+                if admit_streams.is_empty() && self.streams.can_send_stream_data() {
+                    if let Some(sid) = self.streams.first_pending_with_bytes() {
+                        trace!(stream=%sid, "deadline fallback force-admit");
+                        admit_streams.insert(sid);
+                    }
+                }
                 }
 
                 let have_admitted_streams = !admit_streams.is_empty();

@@ -242,6 +242,12 @@ impl StreamsState {
                 _ => continue,
             };
 
+            let pending_bytes = send.pending.unacked();
+            if pending_bytes == 0 {
+                // Nincs ténylegesen küldhető adat → ne próbáld admission-be tenni
+                continue;
+            }
+
             let deadline = Instant::now();
 
             let pending_bytes = send.pending.unacked();
@@ -255,6 +261,17 @@ impl StreamsState {
             }
         }
         admitted
+    }
+
+    pub(crate) fn first_pending_with_bytes(&self) -> Option<StreamId> {
+        for e in self.pending.streams.iter() {
+            if let Some(Some(send)) = self.send.get(&e.id) {
+                if send.pending.unacked() > 0 {
+                    return Some(e.id);
+                }
+            }
+        }
+        None
     }
 
     pub(crate) fn zero_rtt_rejected(&mut self) {

@@ -695,6 +695,8 @@ fn can_admit_object(
     let is_stale = last_seen.map(|t| now.saturating_duration_since(t) > (use_rtt * 2)).unwrap_or(false);
     let virt_q_sanitized = if is_stale && virt_q_after_decay > q_cap { q_cap } else { virt_q_after_decay.min(q_cap) };
 
+    let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1) as f64;
+
     let trans_time = use_rtt / 2 + Duration::from_secs_f64((virt_q_sanitized + pkt_count) / pps);
     let guard = Duration::from_millis(cfg.guard_ms);
 
