@@ -225,7 +225,7 @@ impl StreamsState {
     /// 
     /// Visszaadja azoknak a stream-eknek az ID-jét, amik átmennek az admission control-on
     pub(crate) fn filter_pending_by_deadline<F>(
-        &self,
+        &mut self,
         mut can_admit: F,
     ) -> std::collections::HashSet<StreamId>
     where
@@ -266,9 +266,11 @@ impl StreamsState {
                 );
             }
         }
+
         for id in to_prune {
             self.pending.remove(id);
         }
+
         admitted
     }
 
