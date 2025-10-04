@@ -253,10 +253,10 @@ impl StreamsState {
             let pending_bytes = send.pending.unacked();
 
             if can_admit(stream_id, deadline, pending_bytes) {
-                tracing::debug!(
-                    target="bbr.deadline",
-                    stream_id=?stream_id,
-                );
+                // tracing::debug!(
+                //     target="bbr.deadline",
+                //     stream_id=?stream_id,
+                // );
                 admitted.insert(stream_id);
             }
         }
