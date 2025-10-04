@@ -729,15 +729,15 @@ fn can_admit_object(
         let mut st = self.deadline_state.lock().unwrap();
         st.q_pkts = (virt_q_sanitized + pkt_count).min(q_cap);
     }
-    tracing::debug!(
-        target="bbr.deadline", 
-        admit=true, 
-        global_timeout=?self.delivery_timeout,
-        object_deadline=?object_deadline,
-        effective_deadline=?effective_deadline,
-        virt_q_before=snapshot_q, 
-        virt_q_after=self.deadline_state.lock().unwrap().q_pkts
-    );
+    // tracing::debug!(
+    //     target="bbr.deadline", 
+    //     admit=true, 
+    //     global_timeout=?self.delivery_timeout,
+    //     object_deadline=?object_deadline,
+    //     effective_deadline=?effective_deadline,
+    //     virt_q_before=snapshot_q, 
+    //     virt_q_after=self.deadline_state.lock().unwrap().q_pkts
+    // );
     true
 }
 
