@@ -240,19 +240,23 @@ impl StreamsState {
                 _ => continue,
             };
             let pending_bytes = send.pending.unacked();
-            if pending_bytes == 0 {
+            let fin_pending = send.fin_pending;
+            if pending_bytes == 0 && !fin_pending {
                 continue;
             }
+            let object_size = if pending_bytes == 0 { 1 } else { pending_bytes };
             let now = Instant::now();
-            // Ha lesz per-stream deadline később: send.deadline.or(pending_stream.deadline)
+            // Ha lesz per-stream deadline kesobb: send.deadline.or(pending_stream.deadline)
             let dummy_deadline = now + std::time::Duration::from_secs(3600);
-            if can_admit(stream_id, dummy_deadline, pending_bytes) {
+            if can_admit(stream_id, dummy_deadline, object_size) {
                 admitted.insert(stream_id);
             } else {
                 tracing::debug!(
                     target="bbr.deadline",
                     stream_id=?stream_id,
                     pending_bytes,
+                    fin_pending,
+                    object_size,
                     "admission_reject"
                 );
             }
@@ -264,8 +268,17 @@ impl StreamsState {
         self.pending.iter().filter_map(|e| {
             self.send.get(&e.id)
                 .and_then(|s| s.as_ref())
-                .map(|snd| (e.id, snd.pending.unacked()))
-                .filter(|(_, b)| *b > 0)
+                .map(|snd| {
+                    let pending_bytes = snd.pending.unacked();
+                    let fin_pending = snd.fin_pending;
+                    let object_size = if pending_bytes == 0 && fin_pending {
+                        1
+                    } else {
+                        pending_bytes
+                    };
+                    (e.id, object_size)
+                })
+                .filter(|(_, size)| *size > 0)
         })
     }
 
