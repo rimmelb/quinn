@@ -224,8 +224,10 @@ impl StreamsState {
     /// Előszűri a pending stream-eket deadline alapján
     /// 
     /// Visszaadja azoknak a stream-eknek az ID-jét, amik átmennek az admission control-on
+    // ...existing code...
     pub(crate) fn filter_pending_by_deadline<F>(
         &mut self,
+        now: Instant,
         mut can_admit: F,
     ) -> std::collections::HashSet<StreamId>
     where
@@ -233,9 +235,16 @@ impl StreamsState {
     {
         use std::collections::HashSet;
         let mut admitted = HashSet::new();
-        let pending_ids: Vec<_> = self.pending.iter().map(|p| p.id).collect();
+        // Gyűjtsük az ID + entry deadline párokat, hogy hozzáférjünk a queue-ban tárolt deadline-hoz is
+        let pending_entries: Vec<_> = self
+            .pending
+            .iter()
+            .map(|e| (e.id, e.deadline))
+            .collect();
+
         let mut to_prune = Vec::new();
-        for stream_id in pending_ids {
+
+        for (stream_id, entry_deadline) in pending_entries {
             let send = match self.send.get(&stream_id) {
                 Some(Some(s)) => s,
                 _ => {
@@ -243,17 +252,26 @@ impl StreamsState {
                     continue;
                 }
             };
+
             let pending_bytes = send.pending.unacked();
             let fin_pending = send.fin_pending;
             if pending_bytes == 0 && !fin_pending {
                 to_prune.push(stream_id);
                 continue;
             }
+
             let object_size = if pending_bytes == 0 { 1 } else { pending_bytes };
-            let now = Instant::now();
-            // If we later support per-stream deadlines, prefer send.deadline.or(pending_stream.deadline)
-            let dummy_deadline = now + std::time::Duration::from_secs(3600);
-            if can_admit(stream_id, dummy_deadline, object_size) {
+
+            // Per-stream deadline kiválasztása:
+            // 1. send.deadline (runtime API-val beállítva)
+            // 2. entry_deadline (a pending queue-ból)
+            // 3. fallback: now + 1h (ha egyik sincs)
+            let deadline = send
+                .deadline
+                .or(entry_deadline)
+                .unwrap_or(now + std::time::Duration::from_secs(3600));
+
+            if can_admit(stream_id, deadline, object_size) {
                 admitted.insert(stream_id);
             } else {
                 tracing::debug!(
@@ -262,6 +280,7 @@ impl StreamsState {
                     pending_bytes,
                     fin_pending,
                     object_size,
+                    deadline=?deadline,
                     "admission_reject"
                 );
             }
@@ -274,7 +293,8 @@ impl StreamsState {
         admitted
     }
 
-    pub(crate) fn abort_pending_stream(
+
+        pub(crate) fn abort_pending_stream(
         &mut self,
         id: StreamId,
         error_code: VarInt,

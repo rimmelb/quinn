@@ -699,13 +699,13 @@ fn can_admit_object(
     let trans_time = use_rtt / 2 + Duration::from_secs_f64((virt_q_sanitized + pkt_count) / pps);
     let guard = Duration::from_millis(cfg.guard_ms);
 
-    // FIX: Global timeout az elsődleges (ha van)
-    let effective_deadline = match self.delivery_timeout {
-        Some(global) => global,  // Global timeout felülírja az object deadline-t
-        None => object_deadline, // Ha nincs global, akkor az object deadline számít
-    };
+    // // FIX: Global timeout az elsődleges (ha van)
+    // let effective_deadline = match self.delivery_timeout {
+    //     Some(global) => global,  // Global timeout felülírja az object deadline-t
+    //     None => object_deadline // Ha nincs global, akkor az object deadline számít
+    // };
 
-    let admit = now + trans_time + guard <= effective_deadline;
+    let admit = now + trans_time + guard <= object_deadline;
 
     if !admit {
         // rollback
@@ -718,7 +718,7 @@ fn can_admit_object(
             reason="deadline_exceeded",
             global_timeout=?self.delivery_timeout,
             object_deadline=?object_deadline,
-            effective_deadline=?effective_deadline,
+            effective_deadline=?object_deadline,
             needed_time_ms=((trans_time + guard).as_micros() as f64 / 1000.0),
             virt_q_before=snapshot_q
         );
