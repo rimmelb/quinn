@@ -571,9 +571,9 @@ impl Connection {
                             "all_streams_rejected_force_admit"
                         );
                         // Kényszerített beengedés: engedjük mindet (minimális liveness garancia)
-                        for (sid, _) in &pending_with_bytes {
-                            admit_streams.insert(*sid);
-                        }
+                        // for (sid, _) in &pending_with_bytes {
+                        //     admit_streams.insert(*sid);
+                        // }
                     }
                 }
 
