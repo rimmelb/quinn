@@ -225,7 +225,7 @@ impl StreamsState {
     /// 
     /// Visszaadja azoknak a stream-eknek az ID-jét, amik átmennek az admission control-on
     pub(crate) fn filter_pending_by_deadline<F>(
-    &self, // ← Vissza immutable-re!
+    &self,
     mut can_admit: F,
     ) -> std::collections::HashSet<StreamId>
     where
@@ -247,10 +247,13 @@ impl StreamsState {
             let pending_bytes = send.pending.unacked();
 
             if can_admit(stream_id, deadline, pending_bytes) {
+                tracing::debug!(
+                    target="bbr.deadline",
+                    stream_id=?stream_id,
+                );
                 admitted.insert(stream_id);
             }
         }
-
         admitted
     }
 
@@ -605,6 +608,11 @@ impl StreamsState {
             // FIX: Deadline admission ellenőrzés
             if !admitted_streams.contains(&stream.id) {
             trace!(stream = %stream.id, "deferring non-admitted stream");
+
+            tracing::debug!(
+                    target="bbr.deadline",
+                    admitted_streams=?admitted_streams,
+                );
             
             // FIX: Visszatesszük (nem töröljük!)
             if let Some(send) = self.send.get(&stream.id).and_then(|s| s.as_ref()) {

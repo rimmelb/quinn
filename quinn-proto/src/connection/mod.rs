@@ -557,6 +557,12 @@ impl Connection {
 
                 admit_streams = admitted_streams;
 
+                tracing::debug!(
+                    target="bbr.deadline",
+                    admit_streams=?admit_streams,
+                );
+
+
                 if space_id == SpaceId::Data && !self.streams.can_send_stream_data() {
                 // Ha nincs ténylegesen küldhető stream frame (pl. minden szűrve lett),
                 // ne építsünk üres packetet ami 'other=true' státuszt sugall.
