@@ -543,26 +543,6 @@ impl Connection {
 
             let mut admit_streams: HashSet<StreamId> = HashSet::new();
 
-            // --- DEADLINE PRE-ADMISSION GUARD (Data space) ---
-            if space_id == SpaceId::Data {
-                let rtt = self.path.rtt.get();
-                let congestion = self.path.congestion.as_ref() as &dyn crate::congestion::Controller;
-                
-                let admitted_streams = self.streams.filter_pending_by_deadline(
-                    |_stream_id, deadline, pending_bytes| {
-                        // FIX: Ne használj self-et közvetlenül!
-                        congestion.can_admit_object(pending_bytes, deadline, now, rtt)
-                    }
-                );
-
-                admit_streams = admitted_streams;
-
-                // tracing::debug!(
-                //     target="bbr.deadline",
-                //     admit_streams=?admit_streams,
-                // );
-
-
                 if space_id == SpaceId::Data && can_send.other {
                 if self.streams.can_send_stream_data() {
                     let rtt = self.path.rtt.get();
@@ -595,7 +575,7 @@ impl Connection {
                     can_send.other = false;
                 }
             }
-            }
+            
 
             let mut ack_eliciting = !self.spaces[space_id].pending.is_empty(&self.streams)
                 || self.spaces[space_id].ping_pending
