@@ -543,7 +543,7 @@ impl Connection {
 
             let mut admit_streams: HashSet<StreamId> = HashSet::new();
 
-                if space_id == SpaceId::Data && can_send.other {
+            if space_id == SpaceId::Data && can_send.other {
                 if self.streams.can_send_stream_data() {
                     let rtt = self.path.rtt.get();
                     let congestion = self.path.congestion.as_ref() as &dyn crate::congestion::Controller;
@@ -556,38 +556,42 @@ impl Connection {
 
                     admit_streams = admitted;
 
-                    //tracing::debug!(target="bbr.deadline", ?admit_streams);
-
-                    // Liveness fallback
                     if admit_streams.is_empty() {
-                    // Van-e legalább egy stream bájtokkal?
-                    let pending_with_bytes: Vec<_> = self.streams.iter_pending_with_bytes().collect();
-                    if !pending_with_bytes.is_empty() {
-                        // Instrumentáció: miért lett minden elutasítva — már logoltuk a filterben
-                        tracing::warn!(
-                            target="bbr.deadline",
-                            count=pending_with_bytes.len(),
-                            ?pending_with_bytes,
-                            "all_streams_rejected_force_admit"
-                        );
-                        // Kényszerített beengedés: engedjük mindet (minimális liveness garancia)
-                        // for (sid, _) in &pending_with_bytes {
-                        //     admit_streams.insert(*sid);
-                        // }
-                    }
-                }
+                        let pending_with_bytes: Vec<_> = self.streams.iter_pending_with_bytes().collect();
+                        if !pending_with_bytes.is_empty() {
+                            let mut dropped_any = false;
+                            for (sid, _) in pending_with_bytes {
+                                if self.streams.abort_pending_stream(
+                                    sid,
+                                    VarInt::from_u32(0),
+                                    &mut self.spaces[SpaceId::Data as usize].pending,
+                                ) {
+                                    dropped_any = true;
+                                    tracing::warn!(
+                                        target="bbr.deadline",
+                                        stream=?sid,
+                                        "dropping stream due to missed delivery deadline"
+                                    );
+                                }
+                            }
+                            if dropped_any {
+                                if !self.streams.can_send_stream_data() {
+                                    can_send.other = false;
+                                }
+                                continue;
+                            }
+                        }
 
-                if admit_streams.is_empty() {
-                    // Tényleg nincs küldhető adat (flow control vagy semmi), ekkor kapcsolhatjuk le
-                    tracing::debug!(target="bbr.deadline", "no streams passed admission → disabling can_send.other");
-                    can_send.other = false;
-                }
-                } 
-                else {
+                        tracing::debug!(
+                            target="bbr.deadline",
+                            "no streams passed admission -> disabling can_send.other"
+                        );
+                        can_send.other = false;
+                    }
+                } else {
                     can_send.other = false;
                 }
             }
-            
 
             let mut ack_eliciting = !self.spaces[space_id].pending.is_empty(&self.streams)
                 || self.spaces[space_id].ping_pending
@@ -1812,11 +1816,11 @@ impl Connection {
                         self.spaces[pn_space].pending.crypto.push_back(crypto_frame.clone());
                     }
                 }
-                // Handle stream frame retransmissions 
+                // Handle stream frame retransmissions
                 for stream_meta in &info.stream_frames {
                     self.streams.retransmit(stream_meta.clone());
                 }
-                
+
                 self.spaces[pn_space].pending |= info.retransmits;
                 self.path.mtud.on_non_probe_lost(packet, info.size);
             }
@@ -1968,7 +1972,7 @@ impl Connection {
     ) {
         self.total_authed_packets += 1;
         self.reset_keep_alive(now);
-       
+
         self.reset_idle_timeout(now, space_id);
         self.permit_idle_reset = true;
         self.receiving_ecn |= ecn.is_some();
@@ -3447,10 +3451,10 @@ impl Connection {
         }
 
         if space_id == SpaceId::Data {
-            
+
             sent.stream_frames = self.streams.write_stream_frames(
-                buf, 
-                max_size, 
+                buf,
+                max_size,
                 self.config.send_fairness,
                 admitted_streams
             );
@@ -3819,29 +3823,29 @@ impl Connection {
     }
 
     /// New: deadline-aware object admission
-    pub fn can_send_object(&self, 
-        object_size: u64, 
+    pub fn can_send_object(&self,
+        object_size: u64,
         deadline: Option<Instant>,
         now: Instant  // FIX: Add now parameter instead of self.timers.now()
     ) -> bool {
         let Some(deadline) = deadline else { return true; };
         let rtt = self.path.rtt.get();
-        
+
         self.path.congestion.can_admit_object(object_size, deadline, now, rtt)
     }
-    
+
     /// New: delivery_timeout setter for congestion
-    pub fn set_deadline(&mut self,  
+    pub fn set_deadline(&mut self,
         deadline: Option<Instant>,
-    ) 
-    {  
+    )
+    {
         self.path.congestion.set_deadline(deadline)
     }
 
-    pub fn enable_deadline_scheduler(&mut self,  
+    pub fn enable_deadline_scheduler(&mut self,
         deadline_scheduler: bool,
-    ) 
-    {  
+    )
+    {
         self.path.congestion.set_deadline_scheduler(deadline_scheduler)
     }
 
@@ -4189,3 +4193,5 @@ mod tests {
         }
     }
 }
+
+

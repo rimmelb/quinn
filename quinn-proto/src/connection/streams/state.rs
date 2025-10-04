@@ -274,6 +274,40 @@ impl StreamsState {
         admitted
     }
 
+    pub(crate) fn abort_pending_stream(
+        &mut self,
+        id: StreamId,
+        error_code: VarInt,
+        pending: &mut Retransmits,
+    ) -> bool {
+        let Some(entry) = self.send.get_mut(&id) else {
+            self.pending.remove(id);
+            return false;
+        };
+        let Some(send) = entry.as_mut() else {
+            self.pending.remove(id);
+            return false;
+        };
+        if matches!(send.state, SendState::ResetSent) {
+            self.pending.remove(id);
+            return false;
+        }
+
+        let outstanding = send.pending.unacked();
+        self.unacked_data = self.unacked_data.saturating_sub(outstanding);
+        if send.connection_blocked {
+            if let Some(pos) = self.connection_blocked.iter().position(|&sid| sid == id) {
+                self.connection_blocked.swap_remove(pos);
+            }
+            send.connection_blocked = false;
+        }
+
+        send.reset();
+        self.pending.remove(id);
+        pending.reset_stream.push((id, error_code));
+        true
+    }
+
     pub(crate) fn iter_pending_with_bytes(&self) -> impl Iterator<Item=(StreamId,u64)> + '_ {
         self.pending.iter().filter_map(|e| {
             self.send.get(&e.id)
