@@ -233,20 +233,25 @@ impl StreamsState {
     {
         use std::collections::HashSet;
         let mut admitted = HashSet::new();
-        for pending_stream in self.pending.iter() {
-            let stream_id = pending_stream.id;
+        let pending_ids: Vec<_> = self.pending.iter().map(|p| p.id).collect();
+        let mut to_prune = Vec::new();
+        for stream_id in pending_ids {
             let send = match self.send.get(&stream_id) {
                 Some(Some(s)) => s,
-                _ => continue,
+                _ => {
+                    to_prune.push(stream_id);
+                    continue;
+                }
             };
             let pending_bytes = send.pending.unacked();
             let fin_pending = send.fin_pending;
             if pending_bytes == 0 && !fin_pending {
+                to_prune.push(stream_id);
                 continue;
             }
             let object_size = if pending_bytes == 0 { 1 } else { pending_bytes };
             let now = Instant::now();
-            // Ha lesz per-stream deadline kesobb: send.deadline.or(pending_stream.deadline)
+            // If we later support per-stream deadlines, prefer send.deadline.or(pending_stream.deadline)
             let dummy_deadline = now + std::time::Duration::from_secs(3600);
             if can_admit(stream_id, dummy_deadline, object_size) {
                 admitted.insert(stream_id);
@@ -260,6 +265,9 @@ impl StreamsState {
                     "admission_reject"
                 );
             }
+        }
+        for id in to_prune {
+            self.pending.remove(id);
         }
         admitted
     }
