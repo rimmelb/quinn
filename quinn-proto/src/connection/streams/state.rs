@@ -708,7 +708,7 @@ impl StreamsState {
                 
             // Priority dirty check
             let mut requeue_priority: Option<i32> = None;
-            let mut new_deadline: Option<Instant> = None;
+            let mut new_deadline: Option<u64> = None;
             {
                 if let Some(entry) = self.send.get(&stream.id) {
                     if let Some(send) = entry.as_ref() {
