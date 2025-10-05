@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use thiserror::Error;
+use core::time;
 use std::time::Instant;
 
 use crate::{VarInt, connection::send_buffer::SendBuffer, frame};
@@ -11,7 +12,7 @@ pub(super) struct Send {
     pub(super) pending: SendBuffer,
     pub(super) priority: i32,
     // Deadline alapú ütemezéshez opcionális abszolút határidő
-    pub(super) deadline: Option<Instant>,
+    pub(super) deadline: Option<u64>,
     // Slack (ms) – utolsó számított érték (diagnosztika / requeue logika)
     pub(super) slack_ms: Option<f64>,
     // Priority frissült-e úgy, hogy a pending queue entry-t frissíteni kell
@@ -153,8 +154,8 @@ impl Send {
     }
 
     /// Belső API: stream deadline beállítása
-    pub(super) fn set_deadline(&mut self, deadline: Instant) {
-        self.deadline = Some(deadline);
+    pub(super) fn set_deadline(&mut self, deadline: Option<u64>) {
+        self.deadline = deadline;
         // A prioritást csak akkor frissítjük automatikusan, ha van slack számítás felsőbb rétegen.
         self.priority_dirty = true;
     }

@@ -233,7 +233,7 @@ impl SendStream {
     /// Set an absolute deadline for the stream (transport-level scheduling hint)
     ///
     /// A korábbi adatküldésekhez tartozó priority sorrend (és slack) frissülhet.
-    pub fn set_deadline(&self, deadline: Instant) -> Result<(), ClosedStream> {
+    pub fn set_deadline(&self, deadline: Option<u64>) -> Result<(), ClosedStream> {
         let mut conn = self.conn.state.lock("SendStream::set_deadline");
         // Nem minden implementációban elérhető – belső downcast
         let mut s = conn.inner.send_stream(self.stream);

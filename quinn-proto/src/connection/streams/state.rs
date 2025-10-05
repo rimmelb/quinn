@@ -262,14 +262,17 @@ impl StreamsState {
 
             let object_size = if pending_bytes == 0 { 1 } else { pending_bytes };
 
-            // Per-stream deadline kiválasztása:
-            // 1. send.deadline (runtime API-val beállítva)
-            // 2. entry_deadline (a pending queue-ból)
-            // 3. fallback: now + 1h (ha egyik sincs)
-            let deadline = send
-                .deadline
-                .or(entry_deadline)
-                .unwrap_or(now + std::time::Duration::from_secs(3600));
+            let mut deadline= Instant::now();
+
+            if let Some(timeout) = send.deadline {
+                deadline = deadline + std::time::Duration::from_secs(timeout);
+            }
+
+            if let Some(timeout) = send.deadline {
+                if timeout == 0 {
+                    deadline = now + std::time::Duration::from_secs(3600);
+                }
+            }
 
             if can_admit(stream_id, deadline, object_size) {
                 admitted.insert(stream_id);

@@ -368,7 +368,7 @@ impl<'a> SendStream<'a> {
     }
 
     /// Set an absolute deadline hint for transport scheduling of this stream
-    pub fn set_deadline(&mut self, deadline: Instant) -> Result<(), ClosedStream> {
+    pub fn set_deadline(&mut self, deadline: Option<u64>) -> Result<(), ClosedStream> {
         let max_send_data = self.state.max_send_data(self.id);
         let stream = self
             .state
@@ -429,7 +429,7 @@ impl PendingStreamsQueue {
     }
 
     /// Push a pending stream ID with the given priority, queued after any already-queued streams for the priority
-    fn push_pending(&mut self, id: StreamId, priority: i32, deadline: Option<Instant>) {
+    fn push_pending(&mut self, id: StreamId, priority: i32, deadline: Option<u64>) {
         // Note that in the case where fairness is disabled, if we have a reinserted stream we don't
         // bump it even if priority > next.priority. In order to minimize fragmentation we
         // always try to complete a stream once part of it has been written.
@@ -495,7 +495,7 @@ struct PendingStream {
     // (See https://doc.rust-lang.org/stable/std/cmp/trait.Ord.html#derivable)
     priority: i32,
     /// Opcionális deadline korábbi sorbarendezéshez (alacsonyabb = előrébb)
-    deadline: Option<Instant>,
+    deadline: Option<u64>,
     /// A tie-breaker for streams of the same priority, used to improve fairness by implementing round-robin scheduling:
     /// Larger values are prioritized, so it is initialised to `u64::MAX`, and when a stream writes data, we know
     /// that it currently has the highest recency value, so it is deprioritized by setting its recency to 1 less than the
