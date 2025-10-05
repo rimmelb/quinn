@@ -720,7 +720,17 @@ fn can_admit_object(
             object_deadline=?object_deadline,
             effective_deadline=?object_deadline,
             needed_time_ms=((trans_time + guard).as_micros() as f64 / 1000.0),
-            virt_q_before=snapshot_q
+            virt_q_before=snapshot_q,
+            virt_q_after_decay=virt_q_after_decay,
+            pkt_count=pkt_count,
+            object_size,
+            use_rtt_ms=use_rtt.as_millis(),
+            guard_ms=cfg.guard_ms,
+            pps,
+            effective_bps,
+            cwnd_bytes,
+            pacing_bytes_per_sec,
+            bw_bytes_per_sec
         );
         return false;
     }
