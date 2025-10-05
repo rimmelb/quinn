@@ -265,12 +265,12 @@ impl StreamsState {
             let mut deadline= Instant::now();
 
             if let Some(timeout) = send.deadline {
-                deadline = deadline + std::time::Duration::from_secs(timeout);
+                deadline = deadline + std::time::Duration::from_millis(timeout);
             }
 
             if let Some(timeout) = send.deadline {
                 if timeout == 0 {
-                    deadline = now + std::time::Duration::from_secs(3600);
+                    deadline = now + std::time::Duration::from_millis(3600);
                 }
             }
 
