@@ -708,10 +708,10 @@ fn can_admit_object(
     let admit = now + trans_time + guard <= object_deadline;
 
     if !admit {
-        // rollback
+        // rollback (but keep the decay effect so later streams see the reduced backlog)
         let mut st = self.deadline_state.lock().unwrap();
-        st.q_pkts = snapshot_q;
-        st.last = snapshot_last;
+        st.q_pkts = virt_q_after_decay;
+        st.last = last_seen;
         tracing::debug!(
             target="bbr.deadline", 
             admit=false, 
