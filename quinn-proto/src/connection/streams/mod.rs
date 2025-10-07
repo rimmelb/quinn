@@ -409,7 +409,7 @@ impl<'a> SendStream<'a> {
     }
 
     /// Append an object size hint for transport scheduling of this stream
-    pub fn append_object_size(&mut self, object_size: u64, deadline: Option<Instant>) -> Result<(), ClosedStream> {
+    pub fn append_object_size(&mut self, object_size: u64, deadline: Option<u64>) -> Result<(), ClosedStream> {
         let max_send_data = self.state.max_send_data(self.id);
         let stream = self
             .state

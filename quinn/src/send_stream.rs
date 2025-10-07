@@ -256,7 +256,7 @@ impl SendStream {
         Ok(())
     }
 
-    pub fn append_object_size(&self, object_size: u64, deadline: Option<Instant>) -> Result<(), ClosedStream> {
+    pub fn append_object_size(&self, object_size: u64, deadline: Option<u64>) -> Result<(), ClosedStream> {
         let mut conn = self.conn.state.lock("SendStream::append_object_size");
         let mut s = conn.inner.send_stream(self.stream);
         s.append_object_size(object_size, deadline);
