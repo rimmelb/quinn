@@ -242,6 +242,27 @@ impl SendStream {
         Ok(())
     }
 
+    pub fn append_subgroup_header_size(&self, subgroup_header_size: u64) -> Result<(), ClosedStream> {
+        let mut conn = self.conn.state.lock("SendStream::append_subgroup_header_size");
+        let mut s = conn.inner.send_stream(self.stream);
+        s.append_subgroup_header_size(subgroup_header_size);
+        Ok(())
+    }
+
+    pub fn append_object_header_size(&self, object_header_size: u64) -> Result<(), ClosedStream> {
+        let mut conn = self.conn.state.lock("SendStream::append_object_header_size");
+        let mut s = conn.inner.send_stream(self.stream);
+        s.append_object_header_size(object_header_size);
+        Ok(())
+    }
+
+    pub fn append_object_size(&self, object_size: u64, deadline: Option<Instant>) -> Result<(), ClosedStream> {
+        let mut conn = self.conn.state.lock("SendStream::append_object_size");
+        let mut s = conn.inner.send_stream(self.stream);
+        s.append_object_size(object_size, deadline);
+        Ok(())
+    }
+
     /// Completes when the peer stops the stream or reads the stream to completion
     ///
     /// Yields `Some` with the stop error code if the peer stops the stream. Yields `None` if the

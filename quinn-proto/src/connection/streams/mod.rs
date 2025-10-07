@@ -380,6 +380,48 @@ impl<'a> SendStream<'a> {
         if stream.is_pending() { self.state.pending.push_pending(self.id, stream.priority, stream.deadline); }
         Ok(())
     }
+    /// Append a subgroup header size hint for transport scheduling of this stream
+    pub fn append_subgroup_header_size(&mut self, subgroup_header_size: u64) -> Result<(), ClosedStream> {
+        let max_send_data = self.state.max_send_data(self.id);
+        let stream = self
+            .state
+            .send
+            .get_mut(&self.id)
+            .map(get_or_insert_send(max_send_data))
+            .ok_or(ClosedStream { _private: () })?;
+        stream.append_subgroup_header_size(subgroup_header_size);
+        if stream.is_pending() { self.state.pending.push_pending(self.id, stream.priority, stream.deadline); }
+        Ok(())
+    }
+
+    /// Append an object header size hint for transport scheduling of this stream
+    pub fn append_object_header_size(&mut self, object_header_size: u64) -> Result<(), ClosedStream> {
+        let max_send_data = self.state.max_send_data(self.id);
+        let stream = self
+            .state
+            .send
+            .get_mut(&self.id)
+            .map(get_or_insert_send(max_send_data))
+            .ok_or(ClosedStream { _private: () })?;
+        stream.append_object_header_size(object_header_size);
+        if stream.is_pending() { self.state.pending.push_pending(self.id, stream.priority, stream.deadline); }
+        Ok(())
+    }
+
+    /// Append an object size hint for transport scheduling of this stream
+    pub fn append_object_size(&mut self, object_size: u64, deadline: Option<Instant>) -> Result<(), ClosedStream> {
+        let max_send_data = self.state.max_send_data(self.id);
+        let stream = self
+            .state
+            .send
+            .get_mut(&self.id)
+            .map(get_or_insert_send(max_send_data))
+            .ok_or(ClosedStream { _private: () })?;
+        stream.append_object_size(object_size, deadline);
+        if stream.is_pending() { self.state.pending.push_pending(self.id, stream.priority, stream.deadline); }
+        Ok(())
+    }
+
 
     /// Set slack (milliseconds) relative urgency; mapped to priority internally
     pub fn set_slack_ms(&mut self, slack_ms: f64) -> Result<(), ClosedStream> {

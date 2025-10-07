@@ -224,7 +224,6 @@ impl StreamsState {
     /// Előszűri a pending stream-eket deadline alapján
     /// 
     /// Visszaadja azoknak a stream-eknek az ID-jét, amik átmennek az admission control-on
-    // ...existing code...
     pub(crate) fn filter_pending_by_deadline<F>(
         &mut self,
         now: Instant,

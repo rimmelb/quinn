@@ -1,9 +1,53 @@
 use bytes::Bytes;
 use thiserror::Error;
 use core::time;
-use std::time::Instant;
+use std::{collections::VecDeque, time::Instant};
 
 use crate::{VarInt, connection::send_buffer::SendBuffer, frame};
+
+#[derive(Debug)]
+pub(super) struct ObjectHint {
+    total_len: u64,
+    remaining: u64,
+    deadline: Option<Instant>
+}
+
+#[derive(Debug)]
+pub(super) struct StreamHints {
+    objects: VecDeque<ObjectHint>,
+    bytes_written: u64
+}
+
+impl StreamHints {
+    pub(super) fn new() -> Self {
+        Self {
+            objects: VecDeque::new(),
+            bytes_written: 0
+        }
+    }
+    pub fn append_subgroup_header_size(&mut self, subgroup_header_size: u64, deadline: Option<Instant>) {
+        self.objects.push_back(ObjectHint {
+            total_len: subgroup_header_size,
+            remaining: subgroup_header_size,
+            deadline
+        });
+    }
+    pub fn append_object_header_size(&mut self, object_header_size: u64, deadline: Option<Instant>) {
+        self.objects.push_back(ObjectHint {
+            total_len: object_header_size,
+            remaining: object_header_size,
+            deadline
+        });
+    }
+    pub fn append_object_size(&mut self, object_size: u64, deadline: Option<Instant>) {
+        self.objects.push_back(ObjectHint {
+            total_len: object_size,
+            remaining: object_size,
+            deadline
+        });
+    }
+}
+
 
 #[derive(Debug)]
 pub(super) struct Send {
@@ -23,6 +67,9 @@ pub(super) struct Send {
     pub(super) connection_blocked: bool,
     /// The reason the peer wants us to stop, if `STOP_SENDING` was received
     pub(super) stop_reason: Option<VarInt>,
+
+    ///Size of the objects including the size of the subgroupheader
+    pub(super) object_sizes: Option<StreamHints>
 }
 
 impl Send {
@@ -38,6 +85,7 @@ impl Send {
             fin_pending: false,
             connection_blocked: false,
             stop_reason: None,
+            object_sizes: None
         })
     }
 
@@ -169,6 +217,33 @@ impl Send {
             self.priority_dirty = true;
         }
     }
+
+    pub(super) fn append_subgroup_header_size(&mut self, subgroup_header_size: u64) {
+        self.object_sizes = Some(StreamHints::new());
+        if let Some(hints) = &mut self.object_sizes {
+            hints.append_subgroup_header_size(subgroup_header_size, None);
+        }
+    }
+
+    pub(super) fn append_object_header_size(&mut self, object_header_size: u64) {
+        if self.object_sizes.is_none() {
+            self.object_sizes = Some(StreamHints::new());
+        }
+        if let Some(hints) = &mut self.object_sizes {
+            hints.append_object_header_size(object_header_size, None);
+        }
+    }
+
+    pub(super) fn append_object_size(&mut self, object_size: u64, deadline: Option<Instant>) {
+        if self.object_sizes.is_none() {
+            self.object_sizes = Some(StreamHints::new());
+        }
+        if let Some(hints) = &mut self.object_sizes {
+            hints.append_object_size(object_size, deadline);
+        }
+    }
+
+
 }
 
 /// Alkalmazásban korábban használt threshold mapping integrálása.
