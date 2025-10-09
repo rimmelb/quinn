@@ -2,7 +2,7 @@ use std::{
     collections::{VecDeque, hash_map},
     convert::TryFrom,
     mem,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use bytes::BufMut;
@@ -234,7 +234,6 @@ impl StreamsState {
     {
         use std::collections::HashSet;
         let mut admitted = HashSet::new();
-        // Gyűjtsük az ID + entry deadline párokat, hogy hozzáférjünk a queue-ban tárolt deadline-hoz is
         let pending_entries: Vec<_> = self
             .pending
             .iter()
@@ -243,10 +242,22 @@ impl StreamsState {
 
         let mut to_prune = Vec::new();
 
-        for (stream_id, entry_deadline) in pending_entries {
-            let send = match self.send.get(&stream_id) {
-                Some(Some(s)) => s,
-                _ => {
+        let to_instant = |hint_ms: u64| {
+            let ms = if hint_ms == 0 { 3600 } else { hint_ms };
+            now + Duration::from_millis(ms)
+        };
+
+        for (stream_id, entry_deadline_ms) in pending_entries {
+            let send_entry = match self.send.get_mut(&stream_id) {
+                Some(entry) => entry,
+                None => {
+                    to_prune.push(stream_id);
+                    continue;
+                }
+            };
+            let send = match send_entry.as_mut() {
+                Some(s) => s,
+                None => {
                     to_prune.push(stream_id);
                     continue;
                 }
@@ -259,19 +270,59 @@ impl StreamsState {
                 continue;
             }
 
-            let object_size = if pending_bytes == 0 { 1 } else { pending_bytes };
+            if let Some(hints) = send.object_sizes.as_mut() {
+                if let Some(status) = hints.subgroup_status() {
+                    if status.outstanding > 0 {
+                        if status.ready {
+                            admitted.insert(stream_id);
+                        }
+                        continue;
+                    }
+                }
 
-            let mut deadline= Instant::now();
+                if let Some(object_status) = hints.current_object_status() {
+                    if object_status.outstanding == 0 {
+                        continue;
+                    }
+                    if !object_status.ready {
+                        continue;
+                    }
 
-            if let Some(timeout) = send.deadline {
-                deadline = deadline + std::time::Duration::from_millis(timeout);
-            }
+                    let mut deadline = entry_deadline_ms.map(|ms| to_instant(ms));
+                    if deadline.is_none() {
+                        if let Some(ms) = object_status.deadline_ms.or(send.deadline) {
+                            deadline = Some(to_instant(ms));
+                        }
+                    }
+                    let deadline = deadline.unwrap_or(now);
 
-            if let Some(timeout) = send.deadline {
-                if timeout == 0 {
-                    deadline = now + std::time::Duration::from_millis(3600);
+                    if object_status.admitted {
+                        admitted.insert(stream_id);
+                    } else if can_admit(stream_id, deadline, object_status.total_len) {
+                        hints.mark_current_object_admitted();
+                        admitted.insert(stream_id);
+                    } else {
+                        tracing::debug!(
+                            target="bbr.deadline",
+                            stream_id=?stream_id,
+                            object_size=object_status.total_len,
+                            deadline=?deadline,
+                            "admission_reject_object"
+                        );
+                    }
+                    continue;
                 }
             }
+
+            let mut deadline = entry_deadline_ms.map(|ms| to_instant(ms));
+            if deadline.is_none() {
+                if let Some(timeout) = send.deadline {
+                    deadline = Some(to_instant(timeout));
+                }
+            }
+            let deadline = deadline.unwrap_or(now);
+
+            let object_size = if pending_bytes == 0 { 1 } else { pending_bytes };
 
             if can_admit(stream_id, deadline, object_size) {
                 admitted.insert(stream_id);
@@ -337,11 +388,23 @@ impl StreamsState {
                 .map(|snd| {
                     let pending_bytes = snd.pending.unacked();
                     let fin_pending = snd.fin_pending;
-                    let object_size = if pending_bytes == 0 && fin_pending {
+                    let mut object_size = if pending_bytes == 0 && fin_pending {
                         1
                     } else {
                         pending_bytes
                     };
+                    if let Some(hints) = snd.object_sizes.as_ref() {
+                        if let Some(status) = hints.subgroup_status() {
+                            if status.outstanding > 0 && status.ready {
+                                object_size = status.outstanding;
+                            }
+                        }
+                        if let Some(obj_status) = hints.current_object_status() {
+                            if obj_status.ready && obj_status.outstanding > 0 {
+                                object_size = obj_status.total_len;
+                            }
+                        }
+                    }
                     (e.id, object_size)
                 })
                 .filter(|(_, size)| *size > 0)

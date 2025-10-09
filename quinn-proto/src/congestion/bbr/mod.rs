@@ -673,7 +673,6 @@ fn can_admit_object(
 
     let pps: f64 = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
 
-    // Snapshot + bounded decay
     let (snapshot_q, snapshot_last) = {
         let st = self.deadline_state.lock().unwrap();
         (st.q_pkts, st.last)
@@ -698,12 +697,6 @@ fn can_admit_object(
 
     let trans_time = use_rtt / 2 + Duration::from_secs_f64((virt_q_sanitized + pkt_count) / pps);
     let guard = Duration::from_millis(cfg.guard_ms);
-
-    // // FIX: Global timeout az elsődleges (ha van)
-    // let effective_deadline = match self.delivery_timeout {
-    //     Some(global) => global,  // Global timeout felülírja az object deadline-t
-    //     None => object_deadline // Ha nincs global, akkor az object deadline számít
-    // };
 
     let admit = now + trans_time + guard <= object_deadline;
 

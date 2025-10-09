@@ -377,7 +377,6 @@ impl<'a> SendStream<'a> {
             .map(get_or_insert_send(max_send_data))
             .ok_or(ClosedStream { _private: () })?;
         stream.set_deadline(deadline);
-        if stream.is_pending() { self.state.pending.push_pending(self.id, stream.priority, stream.deadline); }
         Ok(())
     }
     /// Append a subgroup header size hint for transport scheduling of this stream
@@ -390,7 +389,6 @@ impl<'a> SendStream<'a> {
             .map(get_or_insert_send(max_send_data))
             .ok_or(ClosedStream { _private: () })?;
         stream.append_subgroup_header_size(subgroup_header_size);
-        if stream.is_pending() { self.state.pending.push_pending(self.id, stream.priority, stream.deadline); }
         Ok(())
     }
 
@@ -404,7 +402,6 @@ impl<'a> SendStream<'a> {
             .map(get_or_insert_send(max_send_data))
             .ok_or(ClosedStream { _private: () })?;
         stream.append_object_header_size(object_header_size);
-        if stream.is_pending() { self.state.pending.push_pending(self.id, stream.priority, stream.deadline); }
         Ok(())
     }
 
@@ -418,24 +415,9 @@ impl<'a> SendStream<'a> {
             .map(get_or_insert_send(max_send_data))
             .ok_or(ClosedStream { _private: () })?;
         stream.append_object_size(object_size, deadline);
-        if stream.is_pending() { self.state.pending.push_pending(self.id, stream.priority, stream.deadline); }
         Ok(())
     }
 
-
-    /// Set slack (milliseconds) relative urgency; mapped to priority internally
-    pub fn set_slack_ms(&mut self, slack_ms: f64) -> Result<(), ClosedStream> {
-        let max_send_data = self.state.max_send_data(self.id);
-        let stream = self
-            .state
-            .send
-            .get_mut(&self.id)
-            .map(get_or_insert_send(max_send_data))
-            .ok_or(ClosedStream { _private: () })?;
-        stream.set_slack_ms(slack_ms);
-        if stream.is_pending() { self.state.pending.push_pending(self.id, stream.priority, stream.deadline); }
-        Ok(())
-    }
 }
 
 /// A queue of streams with pending outgoing data, sorted by priority

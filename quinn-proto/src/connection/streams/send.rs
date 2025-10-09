@@ -1,50 +1,225 @@
 use bytes::Bytes;
 use thiserror::Error;
 use core::time;
-use std::{collections::VecDeque, time::Instant};
+use std::collections::VecDeque;
 
 use crate::{VarInt, connection::send_buffer::SendBuffer, frame};
 
-#[derive(Debug)]
-pub(super) struct ObjectHint {
-    total_len: u64,
-    remaining: u64,
-    deadline: Option<u64>
+#[derive(Debug, Clone)]
+struct ChunkProgress {
+    len: u64,
+    written: u64,
+    acked: u64,
+}
+
+impl ChunkProgress {
+    fn new(len: u64) -> Self {
+        Self {
+            len,
+            written: 0,
+            acked: 0,
+        }
+    }
+
+    fn apply_write(&mut self, bytes: u64) -> u64 {
+        if bytes == 0 || self.written >= self.len {
+            return bytes;
+        }
+        let need = self.len - self.written;
+        let take = need.min(bytes);
+        self.written += take;
+        bytes - take
+    }
+
+    fn apply_ack(&mut self, bytes: u64) -> u64 {
+        if bytes == 0 || self.acked >= self.len {
+            return bytes;
+        }
+        let need = self.len - self.acked;
+        let take = need.min(bytes);
+        self.acked += take;
+        bytes - take
+    }
+
+    fn is_ready(&self) -> bool {
+        self.written >= self.len
+    }
+
+    fn outstanding(&self) -> u64 {
+        self.len.saturating_sub(self.acked)
+    }
+
+    fn is_done(&self) -> bool {
+        self.acked >= self.len
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ObjectEntry {
+    header: ChunkProgress,
+    payload: ChunkProgress,
+    deadline_ms: Option<u64>,
+    admitted: bool,
+}
+
+impl ObjectEntry {
+    fn with_header(header_len: u64) -> Self {
+        Self {
+            header: ChunkProgress::new(header_len),
+            payload: ChunkProgress::new(0),
+            deadline_ms: None,
+            admitted: false,
+        }
+    }
+
+    fn set_payload(&mut self, payload_len: u64, deadline_ms: Option<u64>) {
+        self.payload = ChunkProgress::new(payload_len);
+        self.deadline_ms = deadline_ms;
+    }
+
+    fn apply_write(&mut self, bytes: u64) -> u64 {
+        let bytes = self.header.apply_write(bytes);
+        self.payload.apply_write(bytes)
+    }
+
+    fn apply_ack(&mut self, bytes: u64) -> u64 {
+        let bytes = self.header.apply_ack(bytes);
+        self.payload.apply_ack(bytes)
+    }
+
+    fn is_ready(&self) -> bool {
+        self.header.is_ready() && self.payload.is_ready() && self.payload.len > 0
+    }
+
+    fn outstanding(&self) -> u64 {
+        self.header.outstanding() + self.payload.outstanding()
+    }
+
+    fn total_len(&self) -> u64 {
+        self.header.len + self.payload.len
+    }
+
+    fn is_done(&self) -> bool {
+        self.header.is_done() && self.payload.is_done()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ChunkStatus {
+    pub ready: bool,
+    pub outstanding: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ObjectStatus {
+    pub ready: bool,
+    pub outstanding: u64,
+    pub total_len: u64,
+    pub deadline_ms: Option<u64>,
+    pub admitted: bool,
 }
 
 #[derive(Debug)]
 pub(super) struct StreamHints {
-    objects: VecDeque<ObjectHint>,
-    bytes_written: u64
+    subgroup: Option<ChunkProgress>,
+    objects: VecDeque<ObjectEntry>,
 }
 
 impl StreamHints {
     pub(super) fn new() -> Self {
         Self {
+            subgroup: None,
             objects: VecDeque::new(),
-            bytes_written: 0
         }
     }
+
     pub fn append_subgroup_header_size(&mut self, subgroup_header_size: u64) {
-        self.objects.push_back(ObjectHint {
-            total_len: subgroup_header_size,
-            remaining: subgroup_header_size,
-            deadline: None
-        });
+        self.subgroup = Some(ChunkProgress::new(subgroup_header_size));
     }
+
     pub fn append_object_header_size(&mut self, object_header_size: u64) {
-        self.objects.push_back(ObjectHint {
-            total_len: object_header_size,
-            remaining: object_header_size,
-            deadline: None
-        });
+        self.objects
+            .push_back(ObjectEntry::with_header(object_header_size));
     }
+
     pub fn append_object_size(&mut self, object_size: u64, deadline: Option<u64>) {
-        self.objects.push_back(ObjectHint {
-            total_len: object_size,
-            remaining: object_size,
-            deadline
-        });
+        if let Some(entry) = self.objects.back_mut() {
+            if entry.payload.len == 0 {
+                entry.set_payload(object_size, deadline);
+                return;
+            }
+        }
+        let mut entry = ObjectEntry::with_header(0);
+        entry.set_payload(object_size, deadline);
+        self.objects.push_back(entry);
+    }
+
+    pub(super) fn on_bytes_written(&mut self, mut bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        if let Some(sub) = &mut self.subgroup {
+            bytes = sub.apply_write(bytes);
+        }
+        for entry in self.objects.iter_mut() {
+            if bytes == 0 {
+                break;
+            }
+            bytes = entry.apply_write(bytes);
+        }
+    }
+
+    pub(super) fn on_bytes_acked(&mut self, mut bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        if let Some(sub) = &mut self.subgroup {
+            bytes = sub.apply_ack(bytes);
+            if sub.is_done() {
+                self.subgroup = None;
+            }
+        }
+        while bytes > 0 {
+            match self.objects.front_mut() {
+                Some(entry) => {
+                    let before = bytes;
+                    bytes = entry.apply_ack(bytes);
+                    if entry.is_done() {
+                        self.objects.pop_front();
+                    } else if before == bytes {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+        while matches!(self.objects.front(), Some(entry) if entry.is_done()) {
+            self.objects.pop_front();
+        }
+    }
+
+    pub(super) fn subgroup_status(&self) -> Option<ChunkStatus> {
+        self.subgroup.as_ref().map(|chunk| ChunkStatus {
+            ready: chunk.is_ready(),
+            outstanding: chunk.outstanding(),
+        })
+    }
+
+    pub(super) fn current_object_status(&self) -> Option<ObjectStatus> {
+        let entry = self.objects.front()?;
+        Some(ObjectStatus {
+            ready: entry.is_ready(),
+            outstanding: entry.outstanding(),
+            total_len: entry.total_len(),
+            deadline_ms: entry.deadline_ms,
+            admitted: entry.admitted,
+        })
+    }
+
+    pub(super) fn mark_current_object_admitted(&mut self) {
+        if let Some(entry) = self.objects.front_mut() {
+            entry.admitted = true;
+        }
     }
 }
 
@@ -57,7 +232,6 @@ pub(super) struct Send {
     pub(super) priority: i32,
     // Deadline alapú ütemezéshez opcionális abszolút határidő
     pub(super) deadline: Option<u64>,
-    // Slack (ms) – utolsó számított érték (diagnosztika / requeue logika)
     pub(super) slack_ms: Option<f64>,
     // Priority frissült-e úgy, hogy a pending queue entry-t frissíteni kell
     pub(super) priority_dirty: bool,
@@ -136,7 +310,11 @@ impl Send {
             }
 
             limit -= chunk.len();
+            let chunk_len = chunk.len() as u64;
             self.pending.write(chunk);
+            if let Some(hints) = &mut self.object_sizes {
+                hints.on_bytes_written(chunk_len);
+            }
         }
 
         Ok(result)
@@ -148,6 +326,7 @@ impl Send {
         if let DataSent { .. } | Ready = self.state {
             self.state = ResetSent;
         }
+        self.object_sizes = None;
     }
 
     /// Handle STOP_SENDING
@@ -165,7 +344,12 @@ impl Send {
 
     /// Returns whether the stream has been finished and all data has been acknowledged by the peer
     pub(super) fn ack(&mut self, frame: frame::StreamMeta) -> bool {
-        self.pending.ack(frame.offsets);
+        let offsets = frame.offsets.clone();
+        self.pending.ack(offsets.clone());
+        if let Some(hints) = &mut self.object_sizes {
+            let acked = offsets.end.saturating_sub(offsets.start);
+            hints.on_bytes_acked(acked);
+        }
         match self.state {
             SendState::DataSent {
                 ref mut finish_acked,
@@ -207,8 +391,8 @@ impl Send {
         // A prioritást csak akkor frissítjük automatikusan, ha van slack számítás felsőbb rétegen.
         self.priority_dirty = true;
     }
-
-    /// Belső API: slack alapú prioritás beállítása ms-ben
+    
+    /// Internal API: update slack (ms) and map it to a discrete priority band
     pub(super) fn set_slack_ms(&mut self, slack_ms: f64) {
         self.slack_ms = Some(slack_ms);
         let new_prio = slack_to_priority(slack_ms);
@@ -217,7 +401,7 @@ impl Send {
             self.priority_dirty = true;
         }
     }
-
+    
     pub(super) fn append_subgroup_header_size(&mut self, subgroup_header_size: u64) {
         self.object_sizes = Some(StreamHints::new());
         if let Some(hints) = &mut self.object_sizes {
