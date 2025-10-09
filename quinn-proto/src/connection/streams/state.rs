@@ -271,6 +271,7 @@ impl StreamsState {
             }
 
             if let Some(hints) = send.object_sizes.as_mut() {
+                hints.promote_blocked_if_idle();
                 if let Some(status) = hints.subgroup_status() {
                     if status.outstanding > 0 {
                         if status.ready {
@@ -305,6 +306,7 @@ impl StreamsState {
                                 deadline=?deadline,
                                 "admission_reject_object"
                             );
+                            hints.park_current_object();
                         }
                     } else {
                         if !object_status.admitted {
@@ -379,7 +381,7 @@ impl StreamsState {
                                 object_size = status.outstanding;
                             }
                         }
-                        if let Some(obj_status) = hints.current_object_status() {
+                        if let Some(obj_status) = hints.peek_object_status() {
                             if obj_status.ready && obj_status.outstanding > 0 {
                                 object_size = obj_status.total_len;
                             }

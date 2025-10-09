@@ -123,6 +123,7 @@ pub(super) struct ObjectStatus {
 pub(super) struct StreamHints {
     subgroup: Option<ChunkProgress>,
     objects: VecDeque<ObjectEntry>,
+    blocked: VecDeque<ObjectEntry>,
 }
 
 impl StreamHints {
@@ -130,6 +131,7 @@ impl StreamHints {
         Self {
             subgroup: None,
             objects: VecDeque::new(),
+            blocked: VecDeque::new(),
         }
     }
 
@@ -220,6 +222,39 @@ impl StreamHints {
         if let Some(entry) = self.objects.front_mut() {
             entry.admitted = true;
         }
+    }
+
+    pub(super) fn park_current_object(&mut self) {
+        if let Some(entry) = self.objects.pop_front() {
+            self.blocked.push_back(entry);
+        }
+    }
+
+    pub(super) fn promote_blocked_if_idle(&mut self) {
+        if self.objects.is_empty() {
+            if let Some(entry) = self.blocked.pop_front() {
+                self.objects.push_back(entry);
+            }
+        }
+    }
+
+    pub(super) fn peek_object_status(&self) -> Option<ObjectStatus> {
+        if let Some(entry) = self.objects.front() {
+            return Some(ObjectStatus {
+                ready: entry.is_ready(),
+                outstanding: entry.outstanding(),
+                total_len: entry.total_len(),
+                deadline_ms: entry.deadline_ms,
+                admitted: entry.admitted,
+            });
+        }
+        self.blocked.front().map(|entry| ObjectStatus {
+            ready: entry.is_ready(),
+            outstanding: entry.outstanding(),
+            total_len: entry.total_len(),
+            deadline_ms: entry.deadline_ms,
+            admitted: entry.admitted,
+        })
     }
 }
 
