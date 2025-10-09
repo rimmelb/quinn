@@ -288,28 +288,27 @@ impl StreamsState {
                 }
                 if let Some(object_status) = hints.peek_object_status(now) {
                     if object_status.outstanding == 0 {
-                        //tracing::debug!(target = "bbr.deadline",?stream_id,"skip_object_no_outstanding");
                         continue;
                     }
                     if !object_status.ready { 
-                        //tracing::debug!( target = "bbr.deadline", ?stream_id, "skip_object_not_ready");
                         continue;
                     }
+
                     if let Some(deadline_ms) = object_status.deadline_ms {
                         let deadline = to_instant(deadline_ms);
+                        tracing::debug!("{:?}", stream_id);
                         if object_status.admitted
                             || can_admit(stream_id, deadline, object_status.total_len)
                         {
                             if !object_status.admitted {
                                 hints.mark_current_object_admitted();
                             }
-                            //tracing::debug!(target = "bbr.deadline", ?stream_id,object_size = object_status.total_len,deadline = ?deadline,"admission_accept_object");
                             admitted.insert(stream_id);
                             
-                        } else {
+                        } else 
+                            {
                             if !send.pending.can_discard_unsent_prefix() {
                                 hints.mark_current_object_admitted();
-                                //tracing::warn!(target = "bbr.deadline",?stream_id,object_size = object_status.total_len,deadline = ?deadline,"reject_object_already_inflight");
                                 admitted.insert(stream_id);
                                 continue;
                             }
@@ -326,12 +325,6 @@ impl StreamsState {
                         if !object_status.admitted {
                             hints.mark_current_object_admitted();
                         }
-                        // tracing::debug!(
-                        //     target = "bbr.deadline",
-                        //     ?stream_id,
-                        //     object_size = object_status.total_len,
-                        //     "admission_accept_no_deadline"
-                        // );
                         admitted.insert(stream_id);
                     }
                     continue;
