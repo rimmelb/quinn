@@ -184,6 +184,15 @@ impl SendBuffer {
         self.unsent != self.offset || !self.retransmits.is_empty()
     }
 
+    /// Whether it is currently safe to drop untransmitted data from the front of the buffer
+    pub(super) fn can_discard_unsent_prefix(&self) -> bool {
+        if self.unacked_len == 0 {
+            return true;
+        }
+        let base_offset = self.offset - self.unacked_len as u64;
+        self.unsent == base_offset
+    }
+
     /// Compute the amount of data that hasn't been acknowledged
     pub(super) fn unacked(&self) -> u64 {
         self.unacked_len as u64 - self.acks.iter().map(|x| x.end - x.start).sum::<u64>()

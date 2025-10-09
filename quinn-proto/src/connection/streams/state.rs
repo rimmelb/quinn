@@ -332,6 +332,18 @@ impl StreamsState {
                             );
                             admitted.insert(stream_id);
                         } else {
+                            if !send.pending.can_discard_unsent_prefix() {
+                                hints.mark_current_object_admitted();
+                                tracing::warn!(
+                                    target = "bbr.deadline",
+                                    ?stream_id,
+                                    object_size = object_status.total_len,
+                                    deadline = ?deadline,
+                                    "reject_object_already_inflight"
+                                );
+                                admitted.insert(stream_id);
+                                continue;
+                            }
                             let dropped = hints.reject_current_object(now, retry_delay);
                             if dropped {
                                 let dropped_len =
