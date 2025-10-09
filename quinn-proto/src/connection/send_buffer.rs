@@ -188,6 +188,52 @@ impl SendBuffer {
     pub(super) fn unacked(&self) -> u64 {
         self.unacked_len as u64 - self.acks.iter().map(|x| x.end - x.start).sum::<u64>()
     }
+
+    /// Drop a prefix of unsent data from the buffer.
+    ///
+    /// Returns the number of bytes actually discarded.
+    pub(super) fn discard_unsent_prefix(&mut self, len: u64) -> u64 {
+        if len == 0 {
+            return 0;
+        }
+
+        let base_offset = self.offset - self.unacked_len as u64;
+        // We only expect to discard data that has never been transmitted.
+        debug_assert!(
+            self.unsent == base_offset,
+            "discarding unsent data only supported when no data was transmitted"
+        );
+
+        let mut remaining = len.min(self.unacked_len as u64);
+        let mut dropped = 0u64;
+
+        while remaining > 0 {
+            let Some(front) = self.unacked_segments.front_mut() else {
+                break;
+            };
+            let front_len = front.len() as u64;
+            if remaining >= front_len {
+                remaining -= front_len;
+                dropped += front_len;
+                self.unacked_segments.pop_front();
+            } else {
+                front.advance(remaining as usize);
+                dropped += remaining;
+                remaining = 0;
+            }
+        }
+
+        let dropped_usize = dropped as usize;
+        if dropped_usize > 0 {
+            self.unacked_len = self.unacked_len.saturating_sub(dropped_usize);
+            self.unsent = self.unsent.saturating_add(dropped);
+            if self.unacked_segments.len() * 4 < self.unacked_segments.capacity() {
+                self.unacked_segments.shrink_to_fit();
+            }
+        }
+
+        dropped
+    }
 }
 
 #[cfg(test)]

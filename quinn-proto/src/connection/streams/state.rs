@@ -302,13 +302,22 @@ impl StreamsState {
                         } else {
                             let dropped = hints.reject_current_object(now, retry_delay);
                             if dropped {
-                                tracing::warn!(
+                                let dropped_len =
+                                    send.pending.discard_unsent_prefix(object_status.total_len);
+                                if dropped_len > 0 {
+                                    self.unacked_data =
+                                        self.unacked_data.saturating_sub(dropped_len);
+                                }
+                                tracing::debug!(
                                     target="bbr.deadline",
                                     stream_id=?stream_id,
                                     object_size=object_status.total_len,
                                     deadline=?deadline,
                                     "dropping_object_after_repeated_deadline_miss"
                                 );
+                                if send.pending.has_unsent_data() || send.fin_pending {
+                                    admitted.insert(stream_id);
+                                }
                             } else {
                                 tracing::debug!(
                                     target="bbr.deadline",
