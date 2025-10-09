@@ -247,7 +247,7 @@ impl StreamsState {
             now + Duration::from_millis(ms)
         };
 
-        for (stream_id, entry_deadline_ms) in pending_entries {
+        for (stream_id, _entry_deadline_ms) in pending_entries {
             let send_entry = match self.send.get_mut(&stream_id) {
                 Some(entry) => entry,
                 None => {
@@ -288,55 +288,35 @@ impl StreamsState {
                         continue;
                     }
 
-                    let mut deadline = entry_deadline_ms.map(|ms| to_instant(ms));
-                    if deadline.is_none() {
-                        if let Some(ms) = object_status.deadline_ms.or(send.deadline) {
-                            deadline = Some(to_instant(ms));
+                    if let Some(deadline_ms) = object_status.deadline_ms {
+                        let deadline = to_instant(deadline_ms);
+                        if object_status.admitted
+                            || can_admit(stream_id, deadline, object_status.total_len)
+                        {
+                            if !object_status.admitted {
+                                hints.mark_current_object_admitted();
+                            }
+                            admitted.insert(stream_id);
+                        } else {
+                            tracing::debug!(
+                                target="bbr.deadline",
+                                stream_id=?stream_id,
+                                object_size=object_status.total_len,
+                                deadline=?deadline,
+                                "admission_reject_object"
+                            );
                         }
-                    }
-                    let deadline = deadline.unwrap_or(now);
-
-                    if object_status.admitted {
-                        admitted.insert(stream_id);
-                    } else if can_admit(stream_id, deadline, object_status.total_len) {
-                        hints.mark_current_object_admitted();
-                        admitted.insert(stream_id);
                     } else {
-                        tracing::debug!(
-                            target="bbr.deadline",
-                            stream_id=?stream_id,
-                            object_size=object_status.total_len,
-                            deadline=?deadline,
-                            "admission_reject_object"
-                        );
+                        if !object_status.admitted {
+                            hints.mark_current_object_admitted();
+                        }
+                        admitted.insert(stream_id);
                     }
                     continue;
                 }
             }
 
-            let mut deadline = entry_deadline_ms.map(|ms| to_instant(ms));
-            if deadline.is_none() {
-                if let Some(timeout) = send.deadline {
-                    deadline = Some(to_instant(timeout));
-                }
-            }
-            let deadline = deadline.unwrap_or(now);
-
-            let object_size = if pending_bytes == 0 { 1 } else { pending_bytes };
-
-            if can_admit(stream_id, deadline, object_size) {
-                admitted.insert(stream_id);
-            } else {
-                tracing::debug!(
-                    target="bbr.deadline",
-                    stream_id=?stream_id,
-                    pending_bytes,
-                    fin_pending,
-                    object_size,
-                    deadline=?deadline,
-                    "admission_reject"
-                );
-            }
+            admitted.insert(stream_id);
         }
 
         for id in to_prune {
