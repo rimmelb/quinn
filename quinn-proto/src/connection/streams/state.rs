@@ -314,6 +314,22 @@ impl StreamsState {
                             }
                             let dropped_len =
                                 send.pending.discard_unsent_prefix(object_status.total_len);
+                            if let Some(dropped_total) = hints.discard_current_object() {
+                                tracing::debug!(
+                                    target="bbr.deadline",
+                                    stream_id=?stream_id,
+                                    object_size=dropped_total,
+                                    deadline=?deadline,
+                                    "admission_drop_object"
+                                );
+                            }
+                            if hints.discard_blocked_objects() {
+                                tracing::debug!(
+                                    target="bbr.deadline",
+                                    ?stream_id,
+                                    "admission_drop_blocked_objects"
+                                );
+                            }
                             if dropped_len > 0 {
                                 self.unacked_data =
                                     self.unacked_data.saturating_sub(dropped_len);

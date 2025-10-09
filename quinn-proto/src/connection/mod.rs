@@ -547,7 +547,7 @@ impl Connection {
                 if self.streams.can_send_stream_data() {
                     let rtt = self.path.rtt.get();
                     let congestion = self.path.congestion.as_ref() as &dyn crate::congestion::Controller;
-
+                    
                     let admitted = self.streams.filter_pending_by_deadline(
                         now,
                         |_stream_id, deadline, pending_bytes| {
