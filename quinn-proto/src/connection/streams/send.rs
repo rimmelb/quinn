@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use thiserror::Error;
-use std::{collections::VecDeque, time::{Duration, Instant}};
+use std::{collections::VecDeque, time::Instant};
 
 use crate::{VarInt, connection::send_buffer::SendBuffer, frame};
 
@@ -131,12 +131,6 @@ pub(super) struct StreamHints {
     blocked: VecDeque<ObjectEntry>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) struct RejectOutcome {
-    pub dropped: bool,
-    pub next_retry: Option<Instant>,
-}
-
 impl StreamHints {
     pub(super) fn new() -> Self {
         Self {
@@ -235,6 +229,18 @@ impl StreamHints {
         }
     }
 
+    pub(super) fn discard_current_object(&mut self) -> Option<u64> {
+        self.objects.pop_front().map(|entry| entry.total_len())
+    }
+
+    pub(super) fn discard_blocked_objects(&mut self) -> bool {
+        let dropped = !self.blocked.is_empty();
+        if dropped {
+            self.blocked.clear();
+        }
+        dropped
+    }
+
     pub(super) fn next_retry_at(&self) -> Option<Instant> {
         self.blocked.front().and_then(|entry| entry.retry_at)
     }
@@ -266,34 +272,6 @@ impl StreamHints {
         })
     }
 
-    pub(super) fn reject_current_object(
-        &mut self,
-        now: Instant,
-        delay: Duration,
-    ) -> RejectOutcome {
-        let Some(mut entry) = self.objects.pop_front() else {
-            return RejectOutcome {
-                dropped: false,
-                next_retry: None,
-            };
-        };
-        entry.failed_attempts = entry.failed_attempts.saturating_add(1);
-        if entry.failed_attempts >= 2 {
-            // Drop the object permanently
-            RejectOutcome {
-                dropped: true,
-                next_retry: None,
-            }
-        } else {
-            entry.retry_at = Some(now + delay);
-            let next_retry = entry.retry_at;
-            self.blocked.push_back(entry);
-            RejectOutcome {
-                dropped: false,
-                next_retry,
-            }
-        }
-    }
 }
 
 
@@ -316,7 +294,7 @@ pub(super) struct Send {
     pub(super) stop_reason: Option<VarInt>,
 
     ///Size of the objects including the size of the subgroupheader
-    pub(super) object_sizes: Option<StreamHints>
+    pub(super) object_sizes: Option<StreamHints>,
 }
 
 impl Send {
@@ -332,7 +310,7 @@ impl Send {
             fin_pending: false,
             connection_blocked: false,
             stop_reason: None,
-            object_sizes: None
+            object_sizes: None,
         })
     }
 

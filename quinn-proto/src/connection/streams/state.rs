@@ -222,21 +222,18 @@ impl StreamsState {
     }
 
     /// Előszűri a pending stream-eket deadline alapján
-    /// 
-    /// Visszaadja azoknak a stream-eknek az ID-jét, amik átmennek az admission control-on,
-    /// valamint a legkorábbi újrapróbálási időpontot, ha van olyan objektum, amit késleltetni kell
+    ///
+    /// Visszaadja azoknak a stream-eknek az ID-jét, amik átmennek az admission control-on.
     pub(crate) fn filter_pending_by_deadline<F>(
         &mut self,
         now: Instant,
         mut can_admit: F,
-    ) -> (std::collections::HashSet<StreamId>, Option<Instant>)
+    ) -> std::collections::HashSet<StreamId>
     where
         F: FnMut(StreamId, Instant, u64) -> bool,
     {
         use std::collections::HashSet;
         let mut admitted = HashSet::new();
-        let mut earliest_retry = None;
-        let retry_delay = Duration::from_millis(10);
         let pending_entries: Vec<_> = self
             .pending
             .iter()
@@ -313,6 +310,7 @@ impl StreamsState {
                             ?stream_id,
                             "skip_object_not_ready"
                         );
+                        self.pending.remove(stream_id);
                         continue;
                     }
 
@@ -347,34 +345,30 @@ impl StreamsState {
                                 admitted.insert(stream_id);
                                 continue;
                             }
-                            let outcome = hints.reject_current_object(now, retry_delay);
-                            if outcome.dropped {
-                                let dropped_len =
-                                    send.pending.discard_unsent_prefix(object_status.total_len);
-                                if dropped_len > 0 {
-                                    self.unacked_data =
-                                        self.unacked_data.saturating_sub(dropped_len);
-                                    admitted.insert(stream_id);
-                                }
-                            } else if let Some(retry_at) = outcome.next_retry {
-                                earliest_retry = Some(earliest_retry.map_or(retry_at, |cur| if retry_at < cur { retry_at } else { cur }));
+                            let dropped_len =
+                                send.pending.discard_unsent_prefix(object_status.total_len);
+                            if let Some(dropped_total) = hints.discard_current_object() {
                                 tracing::debug!(
                                     target="bbr.deadline",
                                     stream_id=?stream_id,
-                                    object_size=object_status.total_len,
+                                    object_size=dropped_total,
                                     deadline=?deadline,
-                                    retry_at=?retry_at,
-                                    "admission_reject_object_retry_scheduled"
+                                    "admission_drop_object"
                                 );
                             } else {
                                 tracing::debug!(
                                     target="bbr.deadline",
                                     stream_id=?stream_id,
-                                    object_size=object_status.total_len,
                                     deadline=?deadline,
-                                    "admission_reject_object"
+                                    "admission_drop_object_empty"
                                 );
                             }
+                            if dropped_len > 0 {
+                                self.unacked_data =
+                                    self.unacked_data.saturating_sub(dropped_len);
+                            }
+                            // Immediately continue with the next hinted object (if any)
+                            continue;
                         }
                     } else {
                         if !object_status.admitted {
@@ -391,13 +385,15 @@ impl StreamsState {
                     continue;
                 }
                 if let Some(retry_at) = hints.next_retry_at() {
-                    earliest_retry = Some(earliest_retry.map_or(retry_at, |cur| if retry_at < cur { retry_at } else { cur }));
-                    tracing::debug!(
-                        target = "bbr.deadline",
-                        ?stream_id,
-                        retry_at = ?retry_at,
-                        "waiting_for_object_retry"
-                    );
+                    if hints.discard_blocked_objects() {
+                        tracing::debug!(
+                            target = "bbr.deadline",
+                            ?stream_id,
+                            retry_at = ?retry_at,
+                            "admission_drop_blocked_objects"
+                        );
+                    }
+                    self.pending.remove(stream_id);
                     continue;
                 }
                 tracing::debug!(
@@ -418,17 +414,7 @@ impl StreamsState {
         for id in to_prune {
             self.pending.remove(id);
         }
-        (admitted, earliest_retry)
-    }
-
-    pub(crate) fn on_object_retry_timeout(&mut self, now: Instant) {
-        for send_entry in self.send.values_mut() {
-            if let Some(send) = send_entry.as_mut() {
-                if let Some(hints) = send.object_sizes.as_mut() {
-                    hints.promote_blocked_if_idle(now);
-                }
-            }
-        }
+        admitted
     }
 
 

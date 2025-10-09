@@ -20,12 +20,10 @@ pub(crate) enum Timer {
     PushNewCid = 7,
     /// When to send an immediate ACK if there are unacked ack-eliciting packets of the peer
     MaxAckDelay = 8,
-    /// When to retry scheduling blocked application objects
-    StreamRetry = 9,
 }
 
 impl Timer {
-    pub(crate) const VALUES: [Self; 10] = [
+    pub(crate) const VALUES: [Self; 9] = [
         Self::LossDetection,
         Self::Idle,
         Self::Close,
@@ -35,14 +33,13 @@ impl Timer {
         Self::Pacing,
         Self::PushNewCid,
         Self::MaxAckDelay,
-        Self::StreamRetry,
     ];
 }
 
 /// A table of data associated with each distinct kind of `Timer`
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct TimerTable {
-    data: [Option<Instant>; 10],
+    data: [Option<Instant>; 9],
 }
 
 impl TimerTable {

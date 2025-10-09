@@ -1,0 +1,11 @@
+*** Begin Patch
+*** Update File: quinn-proto/src/connection/streams/state.rs
+@@
+-    /// Elõszûri a pending stream-eket deadline alapján
+-    /// 
+-    /// Visszaadja azoknak a stream-eknek az ID-jét, amik átmennek az admission control-on,
+-    /// valamint a legkorábbi újrapróbálási idõpontot, ha van olyan objektum, amit késleltetni kell
++    /// Elõszûri a pending stream-eket deadline alapján
++    /// 
++    /// Visszaadja azoknak a stream-eknek az ID-jét, amik átmennek az admission control-on.
+*** End Patch
