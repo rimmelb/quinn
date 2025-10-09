@@ -548,12 +548,24 @@ impl Connection {
                     let rtt = self.path.rtt.get();
                     let congestion = self.path.congestion.as_ref() as &dyn crate::congestion::Controller;
 
-                    let admitted = self.streams.filter_pending_by_deadline(
+                    let (admitted, next_retry) = self.streams.filter_pending_by_deadline(
                         now,
                         |_stream_id, deadline, pending_bytes| {
                             congestion.can_admit_object(pending_bytes, deadline, now, rtt)
                         }
                     );
+
+                    if let Some(retry_at) = next_retry {
+                        if self
+                            .timers
+                            .get(Timer::StreamRetry)
+                            .map_or(true, |current| retry_at < current)
+                        {
+                            self.timers.set(Timer::StreamRetry, retry_at);
+                        }
+                    } else {
+                        self.timers.stop(Timer::StreamRetry);
+                    }
 
                     admit_streams = admitted;
 
@@ -1250,6 +1262,10 @@ impl Connection {
                     self.spaces[SpaceId::Data]
                         .pending_acks
                         .on_max_ack_delay_timeout()
+                }
+                Timer::StreamRetry => {
+                    trace!("stream retry timer expired");
+                    self.streams.on_object_retry_timeout(now);
                 }
             }
         }
@@ -3659,7 +3675,12 @@ impl Connection {
     pub(crate) fn is_idle(&self) -> bool {
         Timer::VALUES
             .iter()
-            .filter(|&&t| !matches!(t, Timer::KeepAlive | Timer::PushNewCid | Timer::KeyDiscard))
+            .filter(|&&t| {
+                !matches!(
+                    t,
+                    Timer::KeepAlive | Timer::PushNewCid | Timer::KeyDiscard | Timer::StreamRetry
+                )
+            })
             .filter_map(|&t| Some((t, self.timers.get(t)?)))
             .min_by_key(|&(_, time)| time)
             .map_or(true, |(timer, _)| timer == Timer::Idle)

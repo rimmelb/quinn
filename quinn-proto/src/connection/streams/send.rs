@@ -131,6 +131,12 @@ pub(super) struct StreamHints {
     blocked: VecDeque<ObjectEntry>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) struct RejectOutcome {
+    pub dropped: bool,
+    pub next_retry: Option<Instant>,
+}
+
 impl StreamHints {
     pub(super) fn new() -> Self {
         Self {
@@ -229,6 +235,10 @@ impl StreamHints {
         }
     }
 
+    pub(super) fn next_retry_at(&self) -> Option<Instant> {
+        self.blocked.front().and_then(|entry| entry.retry_at)
+    }
+
     pub(super) fn promote_blocked_if_idle(&mut self, now: Instant) {
         while self.objects.is_empty() {
             match self.blocked.front() {
@@ -260,16 +270,28 @@ impl StreamHints {
         &mut self,
         now: Instant,
         delay: Duration,
-    ) -> bool {
-        let Some(mut entry) = self.objects.pop_front() else { return false };
+    ) -> RejectOutcome {
+        let Some(mut entry) = self.objects.pop_front() else {
+            return RejectOutcome {
+                dropped: false,
+                next_retry: None,
+            };
+        };
         entry.failed_attempts = entry.failed_attempts.saturating_add(1);
         if entry.failed_attempts >= 2 {
             // Drop the object permanently
-            true
+            RejectOutcome {
+                dropped: true,
+                next_retry: None,
+            }
         } else {
             entry.retry_at = Some(now + delay);
+            let next_retry = entry.retry_at;
             self.blocked.push_back(entry);
-            false
+            RejectOutcome {
+                dropped: false,
+                next_retry,
+            }
         }
     }
 }
