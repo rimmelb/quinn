@@ -248,11 +248,11 @@ impl StreamsState {
         };
 
         for (stream_id, _entry_deadline_ms) in pending_entries {
-            tracing::debug!(target = "bbr.deadline", ?stream_id, "pending_check_start");
+            //tracing::debug!(target = "bbr.deadline", ?stream_id, "pending_check_start");
             let send_entry = match self.send.get_mut(&stream_id) {
                 Some(entry) => entry,
                 None => {
-                    tracing::debug!(target = "bbr.deadline", ?stream_id, "prune_missing_send_entry");
+                    //tracing::debug!(target = "bbr.deadline", ?stream_id, "prune_missing_send_entry");
                     to_prune.push(stream_id);
                     continue;
                 }
@@ -260,7 +260,7 @@ impl StreamsState {
             let send = match send_entry.as_mut() {
                 Some(s) => s,
                 None => {
-                    tracing::debug!(target = "bbr.deadline", ?stream_id, "prune_uninitialized_send");
+                    //tracing::debug!(target = "bbr.deadline", ?stream_id, "prune_uninitialized_send");
                     to_prune.push(stream_id);
                     continue;
                 }
@@ -269,27 +269,18 @@ impl StreamsState {
             let pending_bytes = send.pending.unacked();
             let fin_pending = send.fin_pending;
             if pending_bytes == 0 && !fin_pending {
-                tracing::debug!(
-                    target = "bbr.deadline",
-                    ?stream_id,
-                    "prune_empty_stream"
-                );
+                //tracing::debug!( target = "bbr.deadline", ?stream_id,"prune_empty_stream");
                 to_prune.push(stream_id);
                 continue;
             }
 
             if let Some(hints) = send.object_sizes.as_mut() {
-                tracing::debug!(target = "bbr.deadline", ?stream_id, "object_hints_present");
+                //tracing::debug!(target = "bbr.deadline", ?stream_id, "object_hints_present");
                 hints.promote_blocked_if_idle(now);
                 if let Some(status) = hints.subgroup_status() {
                     if status.outstanding > 0 {
                         if status.ready {
-                            tracing::debug!(
-                                target = "bbr.deadline",
-                                ?stream_id,
-                                outstanding = status.outstanding,
-                                "admitting_subgroup_header"
-                            );
+                            //tracing::debug!( target = "bbr.deadline", ?stream_id, outstanding = status.outstanding, "admitting_subgroup_header");
                             admitted.insert(stream_id);
                         }
                         continue;
@@ -297,23 +288,13 @@ impl StreamsState {
                 }
                 if let Some(object_status) = hints.peek_object_status(now) {
                     if object_status.outstanding == 0 {
-                        tracing::debug!(
-                            target = "bbr.deadline",
-                            ?stream_id,
-                            "skip_object_no_outstanding"
-                        );
+                        //tracing::debug!(target = "bbr.deadline",?stream_id,"skip_object_no_outstanding");
                         continue;
                     }
-                    if !object_status.ready {
-                        tracing::debug!(
-                            target = "bbr.deadline",
-                            ?stream_id,
-                            "skip_object_not_ready"
-                        );
+                    if !object_status.ready { 
+                        //tracing::debug!( target = "bbr.deadline", ?stream_id, "skip_object_not_ready");
                         continue;
                     }
-
-                    
                     if let Some(deadline_ms) = object_status.deadline_ms {
                         let deadline = to_instant(deadline_ms);
                         if object_status.admitted
@@ -322,46 +303,18 @@ impl StreamsState {
                             if !object_status.admitted {
                                 hints.mark_current_object_admitted();
                             }
-                            tracing::debug!(
-                                target = "bbr.deadline",
-                                ?stream_id,
-                                object_size = object_status.total_len,
-                                deadline = ?deadline,
-                                "admission_accept_object"
-                            );
+                            //tracing::debug!(target = "bbr.deadline", ?stream_id,object_size = object_status.total_len,deadline = ?deadline,"admission_accept_object");
                             admitted.insert(stream_id);
                             
                         } else {
                             if !send.pending.can_discard_unsent_prefix() {
                                 hints.mark_current_object_admitted();
-                                tracing::warn!(
-                                    target = "bbr.deadline",
-                                    ?stream_id,
-                                    object_size = object_status.total_len,
-                                    deadline = ?deadline,
-                                    "reject_object_already_inflight"
-                                );
+                                //tracing::warn!(target = "bbr.deadline",?stream_id,object_size = object_status.total_len,deadline = ?deadline,"reject_object_already_inflight");
                                 admitted.insert(stream_id);
                                 continue;
                             }
                             let dropped_len =
                                 send.pending.discard_unsent_prefix(object_status.total_len);
-                            if let Some(dropped_total) = hints.discard_current_object() {
-                                tracing::debug!(
-                                    target="bbr.deadline",
-                                    stream_id=?stream_id,
-                                    object_size=dropped_total,
-                                    deadline=?deadline,
-                                    "admission_drop_object"
-                                );
-                            } else {
-                                tracing::debug!(
-                                    target="bbr.deadline",
-                                    stream_id=?stream_id,
-                                    deadline=?deadline,
-                                    "admission_drop_object_empty"
-                                );
-                            }
                             if dropped_len > 0 {
                                 self.unacked_data =
                                     self.unacked_data.saturating_sub(dropped_len);
@@ -373,41 +326,17 @@ impl StreamsState {
                         if !object_status.admitted {
                             hints.mark_current_object_admitted();
                         }
-                        tracing::debug!(
-                            target = "bbr.deadline",
-                            ?stream_id,
-                            object_size = object_status.total_len,
-                            "admission_accept_no_deadline"
-                        );
+                        // tracing::debug!(
+                        //     target = "bbr.deadline",
+                        //     ?stream_id,
+                        //     object_size = object_status.total_len,
+                        //     "admission_accept_no_deadline"
+                        // );
                         admitted.insert(stream_id);
                     }
                     continue;
                 }
-                if let Some(retry_at) = hints.next_retry_at() {
-                    if hints.discard_blocked_objects() {
-                        tracing::debug!(
-                            target = "bbr.deadline",
-                            ?stream_id,
-                            retry_at = ?retry_at,
-                            "admission_drop_blocked_objects"
-                        );
-                    }
-                    self.pending.remove(stream_id);
-                    continue;
-                }
-                tracing::debug!(
-                    target = "bbr.deadline",
-                    ?stream_id,
-                    "no_object_in_hints"
-                );
             }
-            tracing::debug!(
-                target = "bbr.deadline",
-                ?stream_id,
-                pending_bytes,
-                fin_pending,
-                "admission_accept_plain_stream"
-            );
             admitted.insert(stream_id);
         }
         for id in to_prune {
