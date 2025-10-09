@@ -370,7 +370,6 @@ impl StreamsState {
                     ?stream_id,
                     "no_object_in_hints"
                 );
-                continue;
             }
             tracing::debug!(
                 target = "bbr.deadline",
