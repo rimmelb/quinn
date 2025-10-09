@@ -310,7 +310,6 @@ impl StreamsState {
                             ?stream_id,
                             "skip_object_not_ready"
                         );
-                        self.pending.remove(stream_id);
                         continue;
                     }
 
