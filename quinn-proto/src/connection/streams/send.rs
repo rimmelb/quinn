@@ -1,7 +1,6 @@
 use bytes::Bytes;
 use thiserror::Error;
-use core::time;
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::{Duration, Instant}};
 
 use crate::{VarInt, connection::send_buffer::SendBuffer, frame};
 
@@ -60,6 +59,7 @@ struct ObjectEntry {
     payload: ChunkProgress,
     deadline_ms: Option<u64>,
     admitted: bool,
+    retry_at: Option<Instant>,
 }
 
 impl ObjectEntry {
@@ -69,12 +69,14 @@ impl ObjectEntry {
             payload: ChunkProgress::new(0),
             deadline_ms: None,
             admitted: false,
+            retry_at: None,
         }
     }
 
     fn set_payload(&mut self, payload_len: u64, deadline_ms: Option<u64>) {
         self.payload = ChunkProgress::new(payload_len);
         self.deadline_ms = deadline_ms;
+        self.retry_at = None;
     }
 
     fn apply_write(&mut self, bytes: u64) -> u64 {
@@ -224,31 +226,32 @@ impl StreamHints {
         }
     }
 
-    pub(super) fn park_current_object(&mut self) {
-        if let Some(entry) = self.objects.pop_front() {
+    pub(super) fn park_current_object(&mut self, now: Instant, delay: Duration) {
+        if let Some(mut entry) = self.objects.pop_front() {
+            entry.retry_at = Some(now + delay);
             self.blocked.push_back(entry);
         }
     }
 
-    pub(super) fn promote_blocked_if_idle(&mut self) {
-        if self.objects.is_empty() {
-            if let Some(entry) = self.blocked.pop_front() {
-                self.objects.push_back(entry);
+    pub(super) fn promote_blocked_if_idle(&mut self, now: Instant) {
+        while self.objects.is_empty() {
+            match self.blocked.front() {
+                Some(entry) if entry.retry_at.map(|t| t <= now).unwrap_or(true) => {
+                    let mut entry = self.blocked.pop_front().expect("front exists");
+                    entry.retry_at = None;
+                    self.objects.push_back(entry);
+                }
+                _ => break,
             }
         }
     }
 
-    pub(super) fn peek_object_status(&self) -> Option<ObjectStatus> {
-        if let Some(entry) = self.objects.front() {
-            return Some(ObjectStatus {
-                ready: entry.is_ready(),
-                outstanding: entry.outstanding(),
-                total_len: entry.total_len(),
-                deadline_ms: entry.deadline_ms,
-                admitted: entry.admitted,
-            });
+    pub(super) fn peek_object_status(&self, now: Instant) -> Option<ObjectStatus> {
+        let entry = self.objects.front()?;
+        if entry.retry_at.map(|t| t > now).unwrap_or(false) {
+            return None;
         }
-        self.blocked.front().map(|entry| ObjectStatus {
+        Some(ObjectStatus {
             ready: entry.is_ready(),
             outstanding: entry.outstanding(),
             total_len: entry.total_len(),

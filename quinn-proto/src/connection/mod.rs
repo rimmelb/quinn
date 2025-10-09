@@ -558,10 +558,6 @@ impl Connection {
                     admit_streams = admitted;
 
                     if admit_streams.is_empty() {
-                        tracing::debug!(
-                            target="bbr.deadline",
-                            "no streams passed admission -> deferring stream transmission"
-                        );
                         can_send.other = false;
                     }
                 } else {

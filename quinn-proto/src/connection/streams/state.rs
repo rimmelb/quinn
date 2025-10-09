@@ -234,6 +234,7 @@ impl StreamsState {
     {
         use std::collections::HashSet;
         let mut admitted = HashSet::new();
+        let retry_delay = Duration::from_millis(10);
         let pending_entries: Vec<_> = self
             .pending
             .iter()
@@ -271,7 +272,7 @@ impl StreamsState {
             }
 
             if let Some(hints) = send.object_sizes.as_mut() {
-                hints.promote_blocked_if_idle();
+                hints.promote_blocked_if_idle(now);
                 if let Some(status) = hints.subgroup_status() {
                     if status.outstanding > 0 {
                         if status.ready {
@@ -306,7 +307,7 @@ impl StreamsState {
                                 deadline=?deadline,
                                 "admission_reject_object"
                             );
-                            hints.park_current_object();
+                            hints.park_current_object(now, retry_delay);
                         }
                     } else {
                         if !object_status.admitted {
@@ -316,6 +317,8 @@ impl StreamsState {
                     }
                     continue;
                 }
+
+                continue;
             }
 
             admitted.insert(stream_id);
@@ -368,6 +371,7 @@ impl StreamsState {
             self.send.get(&e.id)
                 .and_then(|s| s.as_ref())
                 .map(|snd| {
+                    let now = Instant::now();
                     let pending_bytes = snd.pending.unacked();
                     let fin_pending = snd.fin_pending;
                     let mut object_size = if pending_bytes == 0 && fin_pending {
@@ -381,7 +385,7 @@ impl StreamsState {
                                 object_size = status.outstanding;
                             }
                         }
-                        if let Some(obj_status) = hints.peek_object_status() {
+                        if let Some(obj_status) = hints.peek_object_status(now) {
                             if obj_status.ready && obj_status.outstanding > 0 {
                                 object_size = obj_status.total_len;
                             }
