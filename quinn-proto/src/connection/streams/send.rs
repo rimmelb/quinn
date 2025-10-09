@@ -59,6 +59,7 @@ struct ObjectEntry {
     payload: ChunkProgress,
     deadline_ms: Option<u64>,
     admitted: bool,
+    failed_attempts: u8,
     retry_at: Option<Instant>,
 }
 
@@ -69,6 +70,7 @@ impl ObjectEntry {
             payload: ChunkProgress::new(0),
             deadline_ms: None,
             admitted: false,
+            failed_attempts: 0,
             retry_at: None,
         }
     }
@@ -76,6 +78,7 @@ impl ObjectEntry {
     fn set_payload(&mut self, payload_len: u64, deadline_ms: Option<u64>) {
         self.payload = ChunkProgress::new(payload_len);
         self.deadline_ms = deadline_ms;
+        self.failed_attempts = 0;
         self.retry_at = None;
     }
 
@@ -226,13 +229,6 @@ impl StreamHints {
         }
     }
 
-    pub(super) fn park_current_object(&mut self, now: Instant, delay: Duration) {
-        if let Some(mut entry) = self.objects.pop_front() {
-            entry.retry_at = Some(now + delay);
-            self.blocked.push_back(entry);
-        }
-    }
-
     pub(super) fn promote_blocked_if_idle(&mut self, now: Instant) {
         while self.objects.is_empty() {
             match self.blocked.front() {
@@ -258,6 +254,23 @@ impl StreamHints {
             deadline_ms: entry.deadline_ms,
             admitted: entry.admitted,
         })
+    }
+
+    pub(super) fn reject_current_object(
+        &mut self,
+        now: Instant,
+        delay: Duration,
+    ) -> bool {
+        let Some(mut entry) = self.objects.pop_front() else { return false };
+        entry.failed_attempts = entry.failed_attempts.saturating_add(1);
+        if entry.failed_attempts >= 2 {
+            // Drop the object permanently
+            true
+        } else {
+            entry.retry_at = Some(now + delay);
+            self.blocked.push_back(entry);
+            false
+        }
     }
 }
 

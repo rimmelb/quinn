@@ -300,14 +300,24 @@ impl StreamsState {
                             }
                             admitted.insert(stream_id);
                         } else {
-                            tracing::debug!(
-                                target="bbr.deadline",
-                                stream_id=?stream_id,
-                                object_size=object_status.total_len,
-                                deadline=?deadline,
-                                "admission_reject_object"
-                            );
-                            hints.park_current_object(now, retry_delay);
+                            let dropped = hints.reject_current_object(now, retry_delay);
+                            if dropped {
+                                tracing::warn!(
+                                    target="bbr.deadline",
+                                    stream_id=?stream_id,
+                                    object_size=object_status.total_len,
+                                    deadline=?deadline,
+                                    "dropping_object_after_repeated_deadline_miss"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    target="bbr.deadline",
+                                    stream_id=?stream_id,
+                                    object_size=object_status.total_len,
+                                    deadline=?deadline,
+                                    "admission_reject_object"
+                                );
+                            }
                         }
                     } else {
                         if !object_status.admitted {
