@@ -733,20 +733,19 @@ impl StreamsState {
         admitted_streams: std::collections::HashSet<StreamId>,
     ) -> StreamMetaVec {
         let mut stream_frames = StreamMetaVec::new();
-        
+        let mut deferred: Vec<(StreamId, i32, Option<u64>)> = Vec::new();
+
         while buf.len() + frame::Stream::SIZE_BOUND < max_buf_size {
             let Some(mut stream) = self.pending.pop() else {
                 break;
             };
 
             // Ha nem admitted: visszatesszük (NEM töröljük!)
-        if !admitted_streams.contains(&stream.id) {
-            trace!(stream = %stream.id, "deferring non-admitted stream");
-            if let Some(send) = self.send.get(&stream.id).and_then(|s| s.as_ref()) {
-                self.pending.push_pending(stream.id, send.priority, send.deadline);
+            if !admitted_streams.contains(&stream.id) {
+                trace!(stream = %stream.id, "deferring non-admitted stream");
+                deferred.push((stream.id, stream.priority, stream.deadline));
+                continue;
             }
-            continue;
-        }
                 
             // Priority dirty check
             let mut requeue_priority: Option<i32> = None;
@@ -814,6 +813,16 @@ impl StreamsState {
                 buf.put_slice(data);
             }
             stream_frames.push(meta);
+        }
+
+        for (id, priority, deadline) in deferred {
+            if let Some(send) = self.send.get(&id).and_then(|s| s.as_ref()) {
+                self.pending
+                    .push_pending(id, send.priority, send.deadline);
+            } else {
+                self.pending
+                    .push_pending(id, priority, deadline);
+            }
         }
 
         stream_frames

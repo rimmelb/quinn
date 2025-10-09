@@ -558,34 +558,9 @@ impl Connection {
                     admit_streams = admitted;
 
                     if admit_streams.is_empty() {
-                        let pending_with_bytes: Vec<_> = self.streams.iter_pending_with_bytes().collect();
-                        if !pending_with_bytes.is_empty() {
-                            let mut dropped_any = false;
-                            for (sid, _) in pending_with_bytes {
-                                if self.streams.abort_pending_stream(
-                                    sid,
-                                    VarInt::from_u32(0),
-                                    &mut self.spaces[SpaceId::Data as usize].pending,
-                                ) {
-                                    dropped_any = true;
-                                    tracing::warn!(
-                                        target="bbr.deadline",
-                                        stream=?sid,
-                                        "dropping stream due to missed delivery deadline"
-                                    );
-                                }
-                            }
-                            if dropped_any {
-                                if !self.streams.can_send_stream_data() {
-                                    can_send.other = false;
-                                }
-                                continue;
-                            }
-                        }
-
                         tracing::debug!(
                             target="bbr.deadline",
-                            "no streams passed admission -> disabling can_send.other"
+                            "no streams passed admission -> deferring stream transmission"
                         );
                         can_send.other = false;
                     }
