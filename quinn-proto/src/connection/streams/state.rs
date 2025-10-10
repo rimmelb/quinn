@@ -1149,6 +1149,10 @@ impl StreamsState {
                     return false;
                 };
 
+                if !object_status.ready {
+                    return false;
+                }
+
                 let mut admitted = object_status.admitted;
                 if !admitted && scheduler.is_some() {
                     let deadline_hint = object_status.deadline_ms;
