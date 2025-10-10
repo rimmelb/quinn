@@ -10,7 +10,7 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use frame::StreamMetaVec;
 
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{rngs::StdRng, seq::IndexedRandom, Rng, SeedableRng};
 use thiserror::Error;
 use tracing::{debug, error, trace, trace_span, warn};
 
@@ -885,6 +885,14 @@ impl Connection {
             let sent =
                 self.populate_packet(now, space_id, buf, builder.max_size, builder.exact_number);
 
+            
+            if sent.is_ack_only(&self.streams) {
+                tracing::debug!(target="bbr.deadline", 
+                "after populate: ack_only={}, buf_len={}", sent.is_ack_only(&self.streams), buf.len()
+            );
+                can_send.other = false;
+            }
+
             // ACK-only packets should only be sent when explicitly allowed. If we write them due to
             // any other reason, there is a bug which leads to one component announcing write
             // readiness while not writing any data. This degrades performance. The condition is
@@ -895,7 +903,6 @@ impl Connection {
                 !(sent.is_ack_only(&self.streams)
                     && !can_send.acks
                     && can_send.other
-                    && !self.streams.admission_blocked()
                     && (buf_capacity - builder.datagram_start) == self.path.current_mtu() as usize
                     && self.datagrams.outgoing.is_empty()),
                 "SendableFrames was {can_send:?}, but only ACKs have been written"
