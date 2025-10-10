@@ -728,9 +728,16 @@ impl StreamsState {
             stream_frames.push(meta);
         }
 
+        let total_bytes: u64 = stream_frames
+        .iter()
+        .map(|meta| meta.offsets.end - meta.offsets.start)
+        .sum();
+
         tracing::debug!(
             target="bbr.deadline",
-            size=stream_frames.len(),
+            frame_count=stream_frames.len(),
+            total_bytes=total_bytes,
+            "write_stream_frames_completed"
         );
 
         for (id, priority, deadline) in deferred {
@@ -1118,24 +1125,40 @@ fn stream_ready_for_transmit(
 
     if let Some(hints) = send.object_sizes.as_mut() {
         hints.promote_blocked_if_idle(now);
+        
+        // ✅ SUBGROUP check (ha van)
         if let Some(status) = hints.subgroup_status() {
             if status.outstanding > 0 {
                 return status.ready;
             }
         }
-        if let Some(object_status) = hints.peek_object_status(now) {
-            if object_status.outstanding == 0 {
+
+        // ✅ LOOP: próbáljuk meg az összes objektumot, amíg találunk egyet, ami küldhető
+        loop {
+            let Some(object_status) = hints.peek_object_status(now) else {
+                // Nincs több objektum → stream nem írható
                 return false;
+            };
+
+            if object_status.outstanding == 0 {
+                // Objektum már teljesen elküldve → következő
+                hints.discard_current_object();
+                continue;
             }
+
             if !object_status.ready {
+                // Objektum header még nem teljes → nem írható
                 return false;
             }
 
+            // ✅ Deadline check
             if let Some(deadline_ms) = object_status.deadline_ms {
                 let deadline_ms = if deadline_ms == 0 { 3600 } else { deadline_ms };
                 let deadline = now + Duration::from_millis(deadline_ms);
+                
                 let mut admitted = object_status.admitted;
                 if !admitted {
+                    // BBR admission check
                     let allow = scheduler
                         .map(|ctx| {
                             ctx.controller.can_admit_object(
@@ -1146,20 +1169,26 @@ fn stream_ready_for_transmit(
                             )
                         })
                         .unwrap_or(true);
+                    
                     if allow {
                         hints.mark_current_object_admitted();
                         admitted = true;
                     }
                 }
+
                 if admitted {
+                    // ✅ Objektum OK → írható
                     return true;
                 }
 
+                // ❌ NEM admitted → eldobás VAGY skip
                 if !send.pending.can_discard_unsent_prefix() {
+                    // Nem lehet eldobni (részben már elküldve) → force admit
                     hints.mark_current_object_admitted();
                     return true;
                 }
 
+                // ✅ Eldobjuk az objektumot
                 let dropped_len = send.pending.discard_unsent_prefix(object_status.total_len);
                 if let Some(dropped_total) = hints.discard_current_object() {
                     debug!(
@@ -1180,17 +1209,21 @@ fn stream_ready_for_transmit(
                 if dropped_len > 0 {
                     *unacked_data = unacked_data.saturating_sub(dropped_len);
                 }
-                return false;
+                
+                // ✅ KÖVETKEZŐ OBJEKTUM próbálkozás (continue loop)
+                continue;
             } else {
+                // Nincs deadline → admit
                 if !object_status.admitted {
                     hints.mark_current_object_admitted();
                 }
                 return true;
             }
         }
-        return false;
+        // Loop vége: ha kilép innen, akkor nincs küldhető objektum (unreachable a fenti return false miatt)
     }
 
+    // Nincs hints → írható
     true
 }
 
