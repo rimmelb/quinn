@@ -1190,12 +1190,12 @@ impl StreamsState {
                 if allow {
                     // ✅ ADMITTED: Jelöljük meg, és RETURN TRUE
                     hints.mark_current_object_admitted();
-                    tracing::debug!(
-                        target = "bbr.deadline",
-                        stream_id = ?stream_id,
-                        object_size = object_size,
-                        "object admitted"
-                    );
+                    // tracing::debug!(
+                    //     target = "bbr.deadline",
+                    //     stream_id = ?stream_id,
+                    //     object_size = object_size,
+                    //     "object admitted"
+                    // );
                     return true;
                 } else {
                     // ❌ NEM ADMITTED: ELDOBJUK az objektumot AZONNAL
