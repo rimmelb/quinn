@@ -1158,6 +1158,9 @@ impl State {
                     self.terminate(reason, shared);
                 }
                 Stream(StreamEvent::Writable { id }) => wake_stream(id, &mut self.blocked_writers),
+                Stream(StreamEvent::ObjectDropped { id, .. }) => {
+                    wake_stream(id, &mut self.blocked_writers);
+                }
                 Stream(StreamEvent::Opened { dir: Dir::Uni }) => {
                     shared.stream_incoming[Dir::Uni as usize].notify_waiters();
                 }

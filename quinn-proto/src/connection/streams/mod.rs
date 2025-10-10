@@ -623,6 +623,15 @@ pub enum StreamEvent {
         /// Directionality for which streams are newly available
         dir: Dir,
     },
+    /// The current object on a stream was dropped by the transport scheduler
+    ObjectDropped {
+        /// Stream whose object was dropped
+        id: StreamId,
+        /// Total bytes discarded for this object
+        bytes: u64,
+        /// Optional deadline hint (milliseconds) associated with the object
+        deadline_ms: Option<u64>,
+    },
 }
 
 /// Indicates whether a frame needs to be transmitted
