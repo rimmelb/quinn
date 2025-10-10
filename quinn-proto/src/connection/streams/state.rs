@@ -683,9 +683,18 @@ impl StreamsState {
                 &mut self.unacked_data,
                 &mut self.events,
             ) {
-                // Ha admission miatt blokkolt
+            // ✅ ÚJ: Ellenőrizzük, hogy van-e OBJEKTUM a queue-ban
+            let has_pending_objects = stream_obj
+                .object_sizes
+                .as_ref()
+                .map(|hints| !hints.objects.is_empty())
+                .unwrap_or(false);
+            
+                // Ha admission miatt blokkolt, VAGY van objektum a queue-ban
                 if deadline_ctx.is_some()
-                    && (stream_obj.pending.unacked() > 0 || stream_obj.fin_pending)
+                    && (stream_obj.pending.unacked() > 0 
+                        || stream_obj.fin_pending 
+                        || has_pending_objects)  // <--- ÚJ
                 {
                     blocked_by_admission = true;
                     deferred.push((id, stream_obj.priority, stream_obj.deadline));
