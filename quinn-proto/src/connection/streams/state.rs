@@ -1179,10 +1179,10 @@ fn stream_ready_for_transmit(
                 }
 
                 if !admitted {
-                    if !send.pending.can_discard_unsent_prefix() {
-                        hints.mark_current_object_admitted();
-                         return true;
-                    }
+                    //if !send.pending.can_discard_unsent_prefix() {
+                    //    hints.mark_current_object_admitted();
+                    //     return true;
+                    //}
 
                     let dropped_len = send.pending.discard_unsent_prefix(object_size);
                     let dropped_total = hints.discard_current_object().unwrap_or(object_size);
