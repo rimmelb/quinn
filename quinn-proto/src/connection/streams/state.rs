@@ -753,7 +753,7 @@ impl StreamsState {
                     // Mindig a JELENLEGI priority-t használjuk
                     self.pending.push_pending(id, send.priority, send.deadline);
                 } else {
-                    tracing::debug!(stream = %id, "stream exhausted after admission check, not re-queuing");
+                    tracing::debug!(target="bbr.deadline", stream = %id, "stream exhausted after admission check, not re-queuing");
                 }
             }
         }
