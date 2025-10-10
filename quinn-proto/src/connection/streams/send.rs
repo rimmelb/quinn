@@ -103,7 +103,7 @@ impl ObjectEntry {
         if self.payload.len == 0 {
             return true;
         }
-        self.payload.available() > 0
+        self.payload.written >= self.payload.len
     }
 
     fn outstanding(&self) -> u64 {
