@@ -893,6 +893,14 @@ impl Connection {
                 can_send.other = false;
             }
 
+            if space_id == SpaceId::Data
+                && sent.stream_frames.is_empty()
+                && self.streams.admission_blocked()
+                && !self.spaces[SpaceId::Data].ping_pending
+            {
+                self.spaces[SpaceId::Data].ping_pending = true;
+            }
+
             // ACK-only packets should only be sent when explicitly allowed. If we write them due to
             // any other reason, there is a bug which leads to one component announcing write
             // readiness while not writing any data. This degrades performance. The condition is
