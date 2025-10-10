@@ -1104,12 +1104,17 @@ impl Connection {
                 || self.zero_rtt_crypto.is_none()
                 || self.side.is_server())
         {
-            // No keys available for this space
             return SendableFrames::empty();
         }
         let mut can_send = self.spaces[space_id].can_send(&self.streams);
         if space_id == SpaceId::Data {
             can_send.other |= self.can_send_1rtt(frame_space_1rtt);
+
+            // If admission blocked and we have no non-stream control to send, do not advertise "other"
+            if self.streams.admission_blocked() && !self.can_send_1rtt_non_stream(frame_space_1rtt)
+            {
+                can_send.other = false;
+            }
         }
         can_send
     }
@@ -3718,18 +3723,9 @@ impl Connection {
     ///
     /// See also `self.space(SpaceId::Data).can_send()`
     fn can_send_1rtt(&self, max_size: usize) -> bool {
-        self.streams.can_send_stream_data()
-            || self.path.challenge_pending
-            || self
-                .prev_path
-                .as_ref()
-                .is_some_and(|(_, x)| x.challenge_pending)
-            || !self.path_responses.is_empty()
-            || self
-                .datagrams
-                .outgoing
-                .front()
-                .is_some_and(|x| x.size(true) <= max_size)
+        // Do not advertise stream data when admission blocked. Still allow non-stream control.
+        (!self.streams.admission_blocked() && self.streams.can_send_stream_data())
+            || self.can_send_1rtt_non_stream(max_size)
     }
 
     /// Update counters to account for a packet becoming acknowledged, lost, or abandoned
@@ -3743,6 +3739,21 @@ impl Connection {
                 return;
             }
         }
+    }
+
+    // Helper: 1-RTT sendability excluding stream data (control paths only)
+    fn can_send_1rtt_non_stream(&self, max_size: usize) -> bool {
+        self.path.challenge_pending
+            || self
+                .prev_path
+                .as_ref()
+                .is_some_and(|(_, x)| x.challenge_pending)
+            || !self.path_responses.is_empty()
+            || self
+                .datagrams
+                .outgoing
+                .front()
+                .is_some_and(|x| x.size(true) <= max_size)
     }
 
     /// Terminate the connection instantly, without sending a close packet
