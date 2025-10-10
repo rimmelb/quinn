@@ -682,27 +682,9 @@ impl StreamsState {
                 scheduler_now,
                 &mut self.unacked_data,
                 &mut self.events,
-            ) {
-            // ✅ ÚJ: Ellenőrizzük, hogy van-e OBJEKTUM a queue-ban
-            let has_pending_objects = stream_obj
-                .object_sizes
-                .as_ref()
-                .map(|hints| !hints.objects.is_empty())
-                .unwrap_or(false);
-            
-                // Ha admission miatt blokkolt, VAGY van objektum a queue-ban
-                if deadline_ctx.is_some()
-                    && (stream_obj.pending.unacked() > 0 
-                        || stream_obj.fin_pending 
-                        || has_pending_objects)  // <--- ÚJ
-                {
-                    blocked_by_admission = true;
-                    deferred.push((id, stream_obj.priority, stream_obj.deadline));
-                } else {
-                    // Nincs mit küldeni, ne tegyük vissza
-                    tracing::debug!(target="bbr.deadline", stream = %id, "stream has no sendable data, removing from pending");
-                }
-                continue;
+            ) 
+            {
+            continue;
             }
 
             let max_buf_size = max_buf_size - buf.len() - 1 - VarInt::size(id.into());
@@ -739,42 +721,6 @@ impl StreamsState {
                 buf.put_slice(data);
             }
             stream_frames.push(meta);
-        }
-
-        let total_bytes: u64 = stream_frames
-            .iter()
-            .map(|meta| meta.offsets.end - meta.offsets.start)
-            .sum();
-
-        for (id, priority, deadline) in deferred {
-            if let Some(send) = self.send.get(&id).and_then(|s| s.as_ref()) {
-                if send.is_reset() {
-                    self.send.remove(&id);
-                    self.pending.remove(id);
-                    continue;
-                }
-                
-                // ✅ ÚJ: Ellenőrizzük, hogy van-e OBJEKTUM a queue-ban
-                let has_pending_objects = send
-                    .object_sizes
-                    .as_ref()
-                    .map(|hints| !hints.objects.is_empty())
-                    .unwrap_or(false);
-                
-                // ✅ A stream VISSZATÉVE, ha:
-                // - Van pending adat VAGY
-                // - Van FIN pending VAGY
-                // - Van objektum a queue-ban (még ha nem is ready)
-                if send.pending.unacked() > 0 || send.fin_pending || has_pending_objects {
-                    self.pending.push_pending(id, send.priority, send.deadline);
-                } else {
-                    tracing::debug!(
-                        target="bbr.deadline",
-                        stream = %id,
-                        "stream exhausted after admission check, not re-queuing"
-                    );
-                }
-            }
         }
 
         stream_frames
