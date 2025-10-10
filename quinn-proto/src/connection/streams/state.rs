@@ -633,30 +633,6 @@ impl StreamsState {
         }
     }
 
-    #[inline]
-    fn has_sendable_data(send: &Send, now: Instant) -> bool {
-        if send.fin_pending {
-            return true;
-        }
-        if let Some(hints) = send.object_sizes.as_ref() {
-            if let Some(sub) = hints.subgroup_status() {
-                if sub.ready && sub.outstanding > 0 {
-                    return true;
-                }
-            }
-            if let Some(obj) = hints.peek_object_status(now) {
-                // Objektum csak akkor küldhető, ha teljesen ready ÉS admitted
-                if obj.ready && obj.admitted {
-                    return true;
-                }
-            }
-            // Hints mellett a nyers pending bájtok (pl. object header) önmagukban ne tartsák pendingben
-            return false;
-        }
-        // Hints nélkül marad a klasszikus viselkedés
-        send.pending.unacked() > 0
-    }
-
     pub(crate) fn write_stream_frames(
         &mut self,
         buf: &mut Vec<u8>,
@@ -675,7 +651,6 @@ impl StreamsState {
 
         while buf.len() + frame::Stream::SIZE_BOUND < max_buf_size {
             tracing::debug!(target="bbr.deadline", reason="pörög");
-
             let Some(pending_entry) = self.pending.pop() else {
                 self.deadline_blocked_last = false;
                 break;
@@ -709,17 +684,24 @@ impl StreamsState {
                 &mut self.unacked_data,
                 &mut self.events,
             ) {
-                // Csak akkor tegyük vissza, ha VAN ténylegesen küldhető adat
-                let sendable = Self::has_sendable_data(stream_obj, scheduler_now);
-                if sendable {
+            // ✅ ÚJ: Ellenőrizzük, hogy van-e OBJEKTUM a queue-ban
+            let has_pending_objects = stream_obj
+                .object_sizes
+                .as_ref()
+                .map(|hints| !hints.objects.is_empty())
+                .unwrap_or(false);
+            
+                // Ha admission miatt blokkolt, VAGY van objektum a queue-ban
+                if deadline_ctx.is_some()
+                    && (stream_obj.pending.unacked() > 0 
+                        || stream_obj.fin_pending 
+                        || has_pending_objects)  // <--- ÚJ
+                {
                     blocked_by_admission = true;
                     deferred.push((id, stream_obj.priority, stream_obj.deadline));
                 } else {
-                    tracing::debug!(
-                        target="bbr.deadline",
-                        stream = %id,
-                        "stream has no sendable data, removing from pending"
-                    );
+                    // Nincs mit küldeni, ne tegyük vissza
+                    tracing::debug!(target="bbr.deadline", stream = %id, "stream has no sendable data, removing from pending");
                 }
                 continue;
             }
@@ -772,10 +754,20 @@ impl StreamsState {
                     self.pending.remove(id);
                     continue;
                 }
-
-                // Ugyanaz a predikátum a re-queue-hoz
-                if Self::has_sendable_data(send, scheduler_now) {
-                    self.pending.push_pending(id, priority, deadline);
+                
+                // ✅ ÚJ: Ellenőrizzük, hogy van-e OBJEKTUM a queue-ban
+                let has_pending_objects = send
+                    .object_sizes
+                    .as_ref()
+                    .map(|hints| !hints.objects.is_empty())
+                    .unwrap_or(false);
+                
+                // ✅ A stream VISSZATÉVE, ha:
+                // - Van pending adat VAGY
+                // - Van FIN pending VAGY
+                // - Van objektum a queue-ban (még ha nem is ready)
+                if send.pending.unacked() > 0 || send.fin_pending || has_pending_objects {
+                    self.pending.push_pending(id, send.priority, send.deadline);
                 } else {
                     tracing::debug!(
                         target="bbr.deadline",
@@ -1216,6 +1208,8 @@ impl StreamsState {
                     // );
                     return true;
                 } else {
+                    // ❌ NEM ADMITTED: ELDOBJUK az objektumot AZONNAL
+                    // ✅ Csak akkor dobhatjuk el, ha SEMMIT nem küldtünk belőle
                     if !send.pending.can_discard_unsent_prefix() {
                         // Ha már elkezdtük küldeni, akkor FORCE-ADMIT
                         tracing::debug!(
@@ -1227,6 +1221,8 @@ impl StreamsState {
                         hints.mark_current_object_admitted();
                         return true;
                     }
+                    
+                    // ✅ Az objektum TELJESEN UNSENT, eldobhatjuk
                     let dropped_len = send.pending.discard_unsent_prefix(object_size);
                     let dropped_total = hints.discard_current_object().unwrap_or(object_size);
                     
