@@ -739,27 +739,23 @@ impl StreamsState {
             .sum();
 
         for (id, priority, deadline) in deferred {
-        if let Some(send) = self.send.get(&id).and_then(|s| s.as_ref()) {
-            // ✅ Ha nincs objektum ÉS nincs pending adat, töröljük a map-ből
-            let has_objects = send.object_sizes.as_ref().map(|h| !h.objects.is_empty()).unwrap_or(true);
-            if !has_objects && send.pending.unacked() == 0 && !send.fin_pending {
-                trace!(stream = %id, "stream exhausted and no objects left, removing from send map");
-                self.send.remove(&id);
-                self.pending.remove(id);
-                continue;
+            if let Some(send) = self.send.get(&id).and_then(|s| s.as_ref()) {
+                // ✅ Ha a stream reset, mindig töröljük
+                if send.is_reset() {
+                    tracing::debug!(target="bbr.deadline", stream = %id, "stream is reset, removing from send map");
+                    self.send.remove(&id);
+                    self.pending.remove(id);
+                    continue;
+                }
+                
+                // ✅ Csak akkor tegyük vissza, ha VAN mit küldeni
+                if send.pending.unacked() > 0 || send.fin_pending {
+                    // Mindig a JELENLEGI priority-t használjuk
+                    self.pending.push_pending(id, send.priority, send.deadline);
+                } else {
+                    tracing::debug!(stream = %id, "stream exhausted after admission check, not re-queuing");
+                }
             }
-
-            // ✅ Csak akkor tegyük vissza, ha VAN mit küldeni
-            if send.pending.unacked() > 0 || send.fin_pending {
-                self.pending.push_pending(id, send.priority, send.deadline);
-            } else {
-                trace!(stream = %id, "stream exhausted after admission check, not re-queuing");
-            }
-        }
-        }
-
-        if stream_frames.is_empty() && blocked_by_admission {
-            self.deadline_blocked_last = true;
         }
 
         stream_frames
