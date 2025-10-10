@@ -895,6 +895,7 @@ impl Connection {
                 !(sent.is_ack_only(&self.streams)
                     && !can_send.acks
                     && can_send.other
+                    && !self.streams.admission_blocked()
                     && (buf_capacity - builder.datagram_start) == self.path.current_mtu() as usize
                     && self.datagrams.outgoing.is_empty()),
                 "SendableFrames was {can_send:?}, but only ACKs have been written"

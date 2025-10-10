@@ -139,6 +139,8 @@ pub struct StreamsState {
 
     /// The shrink to be applied to local_max_data when receive_window is shrunk
     receive_window_shrink_debt: u64,
+    /// Whether the last transmission attempt was blocked by deadline admission control
+    deadline_blocked_last: bool,
 }
 
 pub(crate) struct StreamsDeadlineContext<'a> {
@@ -189,6 +191,7 @@ impl StreamsState {
             initial_max_stream_data_bidi_local: 0u32.into(),
             initial_max_stream_data_bidi_remote: 0u32.into(),
             receive_window_shrink_debt: 0,
+            deadline_blocked_last: false,
         };
 
         for dir in Dir::iter() {
@@ -643,9 +646,12 @@ impl StreamsState {
             .as_ref()
             .map(|ctx| ctx.now)
             .unwrap_or_else(Instant::now);
+        let mut blocked_by_admission = false;
+        self.deadline_blocked_last = false;
 
         while buf.len() + frame::Stream::SIZE_BOUND < max_buf_size {
             let Some(pending_entry) = self.pending.pop() else {
+                self.deadline_blocked_last = false;
                 break;
             };
 
@@ -676,6 +682,11 @@ impl StreamsState {
                 scheduler_now,
                 &mut self.unacked_data,
             ) {
+                if deadline_ctx.is_some()
+                    && (stream_obj.pending.unacked() > 0 || stream_obj.fin_pending)
+                {
+                    blocked_by_admission = true;
+                }
                 trace!(stream = %id, "deferring non-admitted stream");
                 deferred.push((id, stream_obj.priority, stream_obj.deadline));
                 continue;
@@ -717,6 +728,11 @@ impl StreamsState {
             stream_frames.push(meta);
         }
 
+        tracing::debug!(
+            target="bbr.deadline",
+            size=stream_frames.len(),
+        );
+
         for (id, priority, deadline) in deferred {
             if let Some(send) = self.send.get(&id).and_then(|s| s.as_ref()) {
                 self.pending.push_pending(id, send.priority, send.deadline);
@@ -725,7 +741,15 @@ impl StreamsState {
             }
         }
 
+        if stream_frames.is_empty() && blocked_by_admission {
+            self.deadline_blocked_last = true;
+        }
+
         stream_frames
+    }
+
+    pub(crate) fn admission_blocked(&self) -> bool {
+        self.deadline_blocked_last
     }
 
     /// Notify the application that new streams were opened or a stream became readable.
