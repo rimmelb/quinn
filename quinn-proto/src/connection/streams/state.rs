@@ -1122,97 +1122,106 @@ pub(super) fn get_or_insert_send(
 }
 
 impl StreamsState {
-    fn stream_ready_for_transmit(
+fn stream_ready_for_transmit(
     stream_id: StreamId,
     send: &mut Send,
     scheduler: Option<&StreamsDeadlineContext<'_>>,
     now: Instant,
-    unacked_data: &mut u64,     // <--- Külön paraméter
-    events: &mut VecDeque<StreamEvent>, // <--- Külön paraméter
+    unacked_data: &mut u64,
+    events: &mut VecDeque<StreamEvent>,
 ) -> bool {
-        let pending_bytes = send.pending.unacked();
-        if pending_bytes == 0 && !send.fin_pending {
-            return false;
+    let pending_bytes = send.pending.unacked();
+    if pending_bytes == 0 && !send.fin_pending {
+        return false;
+    }
+
+    if let Some(hints) = send.object_sizes.as_mut() {
+        hints.promote_blocked_if_idle(now);
+        
+        // ✅ ÚJ: Ellenőrizzük a subgroup header állapotát
+        if let Some(status) = hints.subgroup_status() {
+            if status.outstanding > 0 {
+                // Ha a subgroup header még nem készen áll, NE küldjük el
+                // Ha készen áll, KÜLDJÜK EL
+                return status.ready;
+            }
         }
 
-        if let Some(hints) = send.object_sizes.as_mut() {
-            hints.promote_blocked_if_idle(now);
-            if let Some(status) = hints.subgroup_status() {
-                if status.outstanding > 0 {
-                    return status.ready;
-                }
+        loop {
+            let Some(object_status) = hints.current_object_status() else {
+                // ✅ Ha nincs objektum, return TRUE (mert a subgroup header készen áll vagy nincs)
+                return true;
+            };
+
+            if !object_status.ready {
+                return false;
             }
 
-            loop {
-                let Some(object_status) = hints.current_object_status() else {
-                    // Nincs több objektum
-                    return false;
-                };
+            let mut admitted = object_status.admitted;
+            if !admitted && scheduler.is_some() {
+                let deadline_hint = object_status.deadline_ms;
+                let object_size = object_status.total_len;
 
-                if !object_status.ready {
-                    return false;
+                let deadline_ms = deadline_hint.unwrap_or(3600);
+                let deadline = now + Duration::from_millis(deadline_ms);
+                let allow = scheduler
+                    .map(|ctx| {
+                        ctx.controller.can_admit_object(
+                            object_size,
+                            deadline,
+                            ctx.now,
+                            ctx.rtt,
+                        )
+                    })
+                    .unwrap_or(true);
+                if allow {
+                    hints.mark_current_object_admitted();
+                    admitted = true;
                 }
 
-                let mut admitted = object_status.admitted;
-                if !admitted && scheduler.is_some() {
-                    let deadline_hint = object_status.deadline_ms;
-                    let object_size = object_status.total_len;
-
-                    let deadline_ms = deadline_hint.unwrap_or(3600);
-                    let deadline = now + Duration::from_millis(deadline_ms);
-                    let allow = scheduler
-                        .map(|ctx| {
-                            ctx.controller.can_admit_object(
-                                object_size,
-                                deadline,
-                                ctx.now,
-                                ctx.rtt,
-                            )
-                        })
-                        .unwrap_or(true);
-                    if allow {
+                if !admitted {
+                    if !send.pending.can_discard_unsent_prefix() {
                         hints.mark_current_object_admitted();
-                        admitted = true;
+                        return true;
                     }
 
-                    if !admitted {
-                        if !send.pending.can_discard_unsent_prefix() {
-                            hints.mark_current_object_admitted();
-                            return true;
-                        }
-
-                        let dropped_len = send.pending.discard_unsent_prefix(object_size);
-                        let dropped_total = hints.discard_current_object().unwrap_or(object_size);
+                    let dropped_len = send.pending.discard_unsent_prefix(object_size);
+                    let dropped_total = hints.discard_current_object().unwrap_or(object_size);
+                    tracing::debug!(
+                        target = "bbr.deadline",
+                        stream_id = ?stream_id,
+                        object_size = dropped_total,
+                        deadline = ?deadline,
+                        "admission_drop_object"
+                    );
+                    if hints.discard_blocked_objects() {
                         tracing::debug!(
                             target = "bbr.deadline",
-                            stream_id = ?stream_id,
-                            object_size = dropped_total,
-                            deadline = ?deadline,
-                            "admission_drop_object"
+                            ?stream_id,
+                            "admission_drop_blocked_objects"
                         );
-                        if hints.discard_blocked_objects() {
-                            tracing::debug!(
-                                target = "bbr.deadline",
-                                ?stream_id,
-                                "admission_drop_blocked_objects"
-                            );
-                        }
-                        if dropped_len > 0 {
-                            *unacked_data = unacked_data.saturating_sub(dropped_len);
-                        }
-
-                        // NE return true, hanem FOLYTATJUK A LOOP-OT:
-                        continue;  // <--- megnézzük a következő objektumot
                     }
-                }
+                    if dropped_len > 0 {
+                        *unacked_data = unacked_data.saturating_sub(dropped_len);
+                    }
 
-                if admitted {
-                    return true;
+                    events.push_back(StreamEvent::ObjectDropped {
+                        id: stream_id,
+                        bytes: dropped_total,
+                        deadline_ms: deadline_hint,
+                    });
+
+                    continue;
                 }
             }
+
+            if admitted {
+                return true;
+            }
         }
-        true
     }
+    true
+}
 }
 
 #[inline]
