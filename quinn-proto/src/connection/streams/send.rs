@@ -58,7 +58,7 @@ impl ChunkProgress {
 }
 
 #[derive(Debug, Clone)]
-struct ObjectEntry {
+pub struct ObjectEntry {
     header: ChunkProgress,
     payload: ChunkProgress,
     deadline_ms: Option<u64>,
@@ -142,7 +142,7 @@ pub(super) struct ObjectStatus {
 #[derive(Debug)]
 pub(super) struct StreamHints {
     subgroup: Option<ChunkProgress>,
-    objects: VecDeque<ObjectEntry>,
+    pub objects: VecDeque<ObjectEntry>,
     blocked: VecDeque<ObjectEntry>,
 }
 

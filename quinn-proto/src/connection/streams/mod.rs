@@ -270,10 +270,8 @@ impl<'a> SendStream<'a> {
         self.state.data_sent += written.bytes as u64;
         self.state.unacked_data += written.bytes as u64;
         trace!(stream = %self.id, "wrote {} bytes", written.bytes);
-        if !was_pending {
-            self.state
-                .pending
-                .push_pending(self.id, stream.priority, stream.deadline);
+        if !was_pending && stream.is_pending() {
+            self.state.pending.push_pending(self.id, stream.priority, stream.deadline);
         }
         Ok(written)
     }
