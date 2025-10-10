@@ -187,7 +187,7 @@ impl SendBuffer {
     /// Whether it is currently safe to drop untransmitted data from the front of the buffer
     pub(super) fn can_discard_unsent_prefix(&self) -> bool {
         if self.unacked_len == 0 {
-            return true;
+            return self.unsent == self.offset;
         }
         let base_offset = self.offset - self.unacked_len as u64;
         self.unsent == base_offset
@@ -202,11 +202,14 @@ impl SendBuffer {
     ///
     /// Returns the number of bytes actually discarded.
     pub(super) fn discard_unsent_prefix(&mut self, len: u64) -> u64 {
+
+        tracing::debug!("{:?} {:?} {:?}", len, self.offset, self.unacked_len);
         if len == 0 {
             return 0;
         }
 
         let base_offset = self.offset - self.unacked_len as u64;
+
         // We only expect to discard data that has never been transmitted.
         debug_assert!(
             self.unsent == base_offset,

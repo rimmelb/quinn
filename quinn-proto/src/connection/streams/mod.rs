@@ -271,7 +271,9 @@ impl<'a> SendStream<'a> {
         self.state.unacked_data += written.bytes as u64;
         //tracing::debug!(target="bbr.deadline", stream = %self.id, "wrote {} bytes", written.bytes);
         if !was_pending && stream.is_pending() {
-            self.state.pending.push_pending(self.id, stream.priority, stream.deadline);
+            self.state
+                .pending
+                .push_pending(self.id, stream.priority, stream.deadline);
         }
         Ok(written)
     }

@@ -10,7 +10,7 @@ use std::{
 use bytes::{Bytes, BytesMut};
 use frame::StreamMetaVec;
 
-use rand::{rngs::StdRng, seq::IndexedRandom, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng, seq::IndexedRandom};
 use thiserror::Error;
 use tracing::{debug, error, trace, trace_span, warn};
 
@@ -885,11 +885,13 @@ impl Connection {
             let sent =
                 self.populate_packet(now, space_id, buf, builder.max_size, builder.exact_number);
 
-            
             if sent.is_ack_only(&self.streams) {
-                tracing::debug!(target="bbr.deadline", 
-                "after populate: ack_only={}, buf_len={}", sent.is_ack_only(&self.streams), buf.len()
-            );
+                tracing::debug!(
+                    target = "bbr.deadline",
+                    "after populate: ack_only={}, buf_len={}",
+                    sent.is_ack_only(&self.streams),
+                    buf.len()
+                );
                 can_send.other = false;
             }
 
