@@ -709,8 +709,12 @@ impl StreamsState {
                 deferred.push((id, stream_obj.priority, stream_obj.deadline));
                 } 
                 else {
-                deferred.push((id, stream_obj.priority, stream_obj.deadline));
-                }
+                tracing::debug!(
+                        target="bbr.deadline",
+                        stream = %id,
+                        "stream temporarily idle (no pending or ready), skipping requeue"
+                );                
+            }
                 continue;
             }
 
@@ -1148,6 +1152,8 @@ impl StreamsState {
             }
         }
 
+        let mut previous_dropped = false;
+
         // ✅ ÚJ: Loop MINDEN objektumon, amíg találunk egyet, ami READY ÉS ADMITTED
         loop {
             let Some(object_status) = hints.current_object_status() else {
@@ -1156,8 +1162,7 @@ impl StreamsState {
             };
 
             if !object_status.ready {
-                // Az objektum még nem ready, VÁRUNK
-                return false;
+                return previous_dropped;
             }
 
             // ✅ KRITIKUS: Az admission ellenőrzést MINDIG végezzük el, MIELŐTT visszatérnénk true-val
@@ -1236,6 +1241,7 @@ impl StreamsState {
                         deadline_ms: deadline_hint,
                     });
 
+                    previous_dropped = true;
                     // ✅ FOLYTATJUK a loop-ot: ellenőrizzük a KÖVETKEZŐ objektumot
                     continue;
                 }
