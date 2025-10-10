@@ -738,13 +738,6 @@ impl StreamsState {
             .map(|meta| meta.offsets.end - meta.offsets.start)
             .sum();
 
-        tracing::debug!(
-            target = "bbr.deadline",
-            frame_count = stream_frames.len(),
-            total_bytes = total_bytes,
-            "write_stream_frames_completed"
-        );
-
         for (id, priority, deadline) in deferred {
         if let Some(send) = self.send.get(&id).and_then(|s| s.as_ref()) {
             // ✅ Ha nincs objektum ÉS nincs pending adat, töröljük a map-ből
@@ -1186,7 +1179,7 @@ impl StreamsState {
 
                         let dropped_len = send.pending.discard_unsent_prefix(object_size);
                         let dropped_total = hints.discard_current_object().unwrap_or(object_size);
-                        debug!(
+                        tracing::debug!(
                             target = "bbr.deadline",
                             stream_id = ?stream_id,
                             object_size = dropped_total,
@@ -1194,7 +1187,7 @@ impl StreamsState {
                             "admission_drop_object"
                         );
                         if hints.discard_blocked_objects() {
-                            debug!(
+                            tracing::debug!(
                                 target = "bbr.deadline",
                                 ?stream_id,
                                 "admission_drop_blocked_objects"
