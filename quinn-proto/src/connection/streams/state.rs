@@ -688,9 +688,10 @@ impl StreamsState {
                 if deadline_ctx.is_some()
                     && (stream_obj.pending.unacked() > 0 || stream_obj.fin_pending)
                 {
-                    blocked_by_admission = true;
-                    deferred.push((id, stream_obj.priority, stream_obj.deadline));
-                } else {
+                blocked_by_admission = true;
+                deferred.push((id, stream_obj.priority, stream_obj.deadline));
+                } 
+                else {
                     // Nincs mit küldeni, ne tegyük vissza
                     tracing::debug!(target="bbr.deadline", stream = %id, "stream has no sendable data, removing from pending");
                 }
@@ -1137,9 +1138,11 @@ fn stream_ready_for_transmit(
         // ✅ ÚJ: Ellenőrizzük a subgroup header állapotát
         if let Some(status) = hints.subgroup_status() {
             if status.outstanding > 0 {
-                // Ha a subgroup header még nem készen áll, NE küldjük el
-                // Ha készen áll, KÜLDJÜK EL
-                return status.ready;
+                if !status.ready && send.pending.unacked() == 0 {
+                    // Ha nincs pending adat, akkor tényleg még nem írta be az alkalmazás
+                    return false;
+                }
+                return true;
             }
         }
 
