@@ -684,24 +684,32 @@ impl StreamsState {
                 &mut self.unacked_data,
                 &mut self.events,
             ) {
-            // ✅ ÚJ: Ellenőrizzük, hogy van-e OBJEKTUM a queue-ban
-            let has_pending_objects = stream_obj
-                .object_sizes
-                .as_ref()
-                .map(|hints| !hints.objects.is_empty())
-                .unwrap_or(false);
-            
-                // Ha admission miatt blokkolt, VAGY van objektum a queue-ban
-                if deadline_ctx.is_some()
-                    && (stream_obj.pending.unacked() > 0 
-                        || stream_obj.fin_pending 
-                        || has_pending_objects)  // <--- ÚJ
+                // NEW: detect “ready” object even if not yet admitted
+                let mut has_ready_object = false;
+                let mut has_ready_subgroup = false;
+                if let Some(hints) = stream_obj.object_sizes.as_ref() {
+                    if let Some(obj) = hints.peek_object_status(scheduler_now) {
+                        // fontos: ready elég a requeue-hoz, az admission itt még lehet false
+                        has_ready_object = obj.ready;
+                    }
+                    if let Some(sub) = hints.subgroup_status() {
+                        has_ready_subgroup = sub.ready && sub.outstanding > 0;
+                    }
+                }
+
+                // Re-queue if: van ténylegesen küldhető dolog, vagy a következő objektum már ready
+                if stream_obj.pending.unacked() > 0
+                    || stream_obj.fin_pending
+                    || has_ready_object
+                    || has_ready_subgroup
                 {
-                    blocked_by_admission = true;
-                    deferred.push((id, stream_obj.priority, stream_obj.deadline));
-                } else {
-                    // Nincs mit küldeni, ne tegyük vissza
-                    tracing::debug!(target="bbr.deadline", stream = %id, "stream has no sendable data, removing from pending");
+                    if deadline_ctx.is_some() {
+                        blocked_by_admission = true;
+                    }
+                deferred.push((id, stream_obj.priority, stream_obj.deadline));
+                } 
+                else {
+                deferred.push((id, stream_obj.priority, stream_obj.deadline));
                 }
                 continue;
             }
@@ -742,11 +750,6 @@ impl StreamsState {
             stream_frames.push(meta);
         }
 
-        let total_bytes: u64 = stream_frames
-            .iter()
-            .map(|meta| meta.offsets.end - meta.offsets.start)
-            .sum();
-
         for (id, priority, deadline) in deferred {
             if let Some(send) = self.send.get(&id).and_then(|s| s.as_ref()) {
                 if send.is_reset() {
@@ -754,32 +757,13 @@ impl StreamsState {
                     self.pending.remove(id);
                     continue;
                 }
+                self.pending.push_pending(id, priority, deadline);
                 
-                // ✅ ÚJ: Ellenőrizzük, hogy van-e OBJEKTUM a queue-ban
-                let has_pending_objects = send
-                    .object_sizes
-                    .as_ref()
-                    .map(|hints| !hints.objects.is_empty())
-                    .unwrap_or(false);
-                
-                // ✅ A stream VISSZATÉVE, ha:
-                // - Van pending adat VAGY
-                // - Van FIN pending VAGY
-                // - Van objektum a queue-ban (még ha nem is ready)
-                if send.pending.unacked() > 0 || send.fin_pending || has_pending_objects {
-                    self.pending.push_pending(id, send.priority, send.deadline);
-                } else {
-                    tracing::debug!(
-                        target="bbr.deadline",
-                        stream = %id,
-                        "stream exhausted after admission check, not re-queuing"
-                    );
-                }
             }
         }
 
-        stream_frames
-    }
+    stream_frames
+}
 
     pub(crate) fn admission_blocked(&self) -> bool {
         self.deadline_blocked_last
