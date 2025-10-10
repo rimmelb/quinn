@@ -739,20 +739,31 @@ impl StreamsState {
 
         for (id, priority, deadline) in deferred {
             if let Some(send) = self.send.get(&id).and_then(|s| s.as_ref()) {
-                // ✅ Ha a stream reset, mindig töröljük
                 if send.is_reset() {
-                    tracing::debug!(target="bbr.deadline", stream = %id, "stream is reset, removing from send map");
                     self.send.remove(&id);
                     self.pending.remove(id);
                     continue;
                 }
-
-                // ✅ Csak akkor tegyük vissza, ha VAN mit küldeni
-                if send.pending.unacked() > 0 || send.fin_pending {
-                    // Mindig a JELENLEGI priority-t használjuk
+                
+                // ✅ ÚJ: Ellenőrizzük, hogy van-e OBJEKTUM a queue-ban
+                let has_pending_objects = send
+                    .object_sizes
+                    .as_ref()
+                    .map(|hints| !hints.objects.is_empty())
+                    .unwrap_or(false);
+                
+                // ✅ A stream VISSZATÉVE, ha:
+                // - Van pending adat VAGY
+                // - Van FIN pending VAGY
+                // - Van objektum a queue-ban (még ha nem is ready)
+                if send.pending.unacked() > 0 || send.fin_pending || has_pending_objects {
                     self.pending.push_pending(id, send.priority, send.deadline);
                 } else {
-                    tracing::debug!(target="bbr.deadline", stream = %id, "stream exhausted after admission check, not re-queuing");
+                    tracing::debug!(
+                        target="bbr.deadline",
+                        stream = %id,
+                        "stream exhausted after admission check, not re-queuing"
+                    );
                 }
             }
         }
