@@ -25,6 +25,7 @@ use send::{BytesSource, Send, SendState};
 pub use send::{FinishError, WriteError, Written};
 
 mod state;
+pub(crate) use state::StreamsDeadlineContext;
 #[allow(unreachable_pub)] // fuzzing only
 pub use state::StreamsState;
 
@@ -270,7 +271,9 @@ impl<'a> SendStream<'a> {
         self.state.unacked_data += written.bytes as u64;
         trace!(stream = %self.id, "wrote {} bytes", written.bytes);
         if !was_pending {
-            self.state.pending.push_pending(self.id, stream.priority, stream.deadline);
+            self.state
+                .pending
+                .push_pending(self.id, stream.priority, stream.deadline);
         }
         Ok(written)
     }
@@ -301,7 +304,9 @@ impl<'a> SendStream<'a> {
         let was_pending = stream.is_pending();
         stream.finish()?;
         if !was_pending {
-            self.state.pending.push_pending(self.id, stream.priority, stream.deadline);
+            self.state
+                .pending
+                .push_pending(self.id, stream.priority, stream.deadline);
         }
 
         Ok(())
@@ -380,7 +385,10 @@ impl<'a> SendStream<'a> {
         Ok(())
     }
     /// Append a subgroup header size hint for transport scheduling of this stream
-    pub fn append_subgroup_header_size(&mut self, subgroup_header_size: u64) -> Result<(), ClosedStream> {
+    pub fn append_subgroup_header_size(
+        &mut self,
+        subgroup_header_size: u64,
+    ) -> Result<(), ClosedStream> {
         let max_send_data = self.state.max_send_data(self.id);
         let stream = self
             .state
@@ -393,7 +401,10 @@ impl<'a> SendStream<'a> {
     }
 
     /// Append an object header size hint for transport scheduling of this stream
-    pub fn append_object_header_size(&mut self, object_header_size: u64) -> Result<(), ClosedStream> {
+    pub fn append_object_header_size(
+        &mut self,
+        object_header_size: u64,
+    ) -> Result<(), ClosedStream> {
         let max_send_data = self.state.max_send_data(self.id);
         let stream = self
             .state
@@ -406,7 +417,11 @@ impl<'a> SendStream<'a> {
     }
 
     /// Append an object size hint for transport scheduling of this stream
-    pub fn append_object_size(&mut self, object_size: u64, deadline: Option<u64>) -> Result<(), ClosedStream> {
+    pub fn append_object_size(
+        &mut self,
+        object_size: u64,
+        deadline: Option<u64>,
+    ) -> Result<(), ClosedStream> {
         let max_send_data = self.state.max_send_data(self.id);
         let stream = self
             .state
@@ -417,7 +432,6 @@ impl<'a> SendStream<'a> {
         stream.append_object_size(object_size, deadline);
         Ok(())
     }
-
 }
 
 /// A queue of streams with pending outgoing data, sorted by priority
@@ -463,10 +477,17 @@ impl PendingStreamsQueue {
         // This is enough to implement round-robin scheduling for streams that are still pending even after being handled,
         // as in that case they are removed from the `BinaryHeap`, handled, and then immediately reinserted.
         self.recency -= 1;
-        self.streams.push(PendingStream { priority, recency: self.recency, deadline, id });
+        self.streams.push(PendingStream {
+            priority,
+            recency: self.recency,
+            deadline,
+            id,
+        });
     }
 
-    fn pop(&mut self) -> Option<PendingStream> { self.next.take().or_else(|| self.streams.pop()) }
+    fn pop(&mut self) -> Option<PendingStream> {
+        self.next.take().or_else(|| self.streams.pop())
+    }
 
     fn clear(&mut self) {
         self.next = None;
@@ -474,7 +495,7 @@ impl PendingStreamsQueue {
     }
 
     /// Eltávolít egy stream-et a queue-ból ID alapján
-    /// 
+    ///
     /// Visszaadja `true`-t, ha a stream megtalálható volt és el lett távolítva
     pub(super) fn remove(&mut self, id: StreamId) -> bool {
         // 1. Ellenőrizzük a `next` field-et (az aktívan kiválasztott stream)
@@ -491,7 +512,7 @@ impl PendingStreamsQueue {
         let original_len = self.streams.len();
         let streams_vec: Vec<_> = self.streams.drain().filter(|s| s.id != id).collect();
         self.streams = BinaryHeap::from(streams_vec);
-        
+
         // Ha változott a méret, akkor sikeres volt az eltávolítás
         original_len != self.streams.len()
     }
@@ -540,12 +561,10 @@ impl Ord for PendingStream {
             Ordering::Equal => {
                 // Deadline: korábbi (kisebb Instant) legyen előrébb -> treat earlier as Greater
                 match (self.deadline, other.deadline) {
-                    (Some(a), Some(b)) => {
-                        match a.cmp(&b) {
-                            Ordering::Less => return Ordering::Greater,
-                            Ordering::Greater => return Ordering::Less,
-                            Ordering::Equal => {}
-                        }
+                    (Some(a), Some(b)) => match a.cmp(&b) {
+                        Ordering::Less => return Ordering::Greater,
+                        Ordering::Greater => return Ordering::Less,
+                        Ordering::Equal => {}
                     },
                     (Some(_), None) => return Ordering::Greater, // prefer streams with deadlines
                     (None, Some(_)) => return Ordering::Less,
@@ -561,7 +580,11 @@ impl Ord for PendingStream {
         }
     }
 }
-impl PartialOrd for PendingStream { fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) } }
+impl PartialOrd for PendingStream {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 /// Application events about streams
 #[derive(Debug, PartialEq, Eq)]

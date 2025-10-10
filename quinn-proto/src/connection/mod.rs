@@ -1,6 +1,6 @@
-﻿use std::{
+use std::{
     cmp,
-    collections::{HashSet, VecDeque},
+    collections::VecDeque,
     convert::TryFrom,
     fmt, io, mem,
     net::{IpAddr, SocketAddr},
@@ -78,6 +78,7 @@ mod stats;
 pub use stats::{ConnectionStats, FrameStats, PathStats, UdpStats};
 
 mod streams;
+use streams::StreamsDeadlineContext;
 #[cfg(fuzzing)]
 pub use streams::StreamsState;
 #[cfg(not(fuzzing))]
@@ -541,27 +542,8 @@ impl Connection {
                 continue;
             }
 
-            let mut admit_streams: HashSet<StreamId> = HashSet::new();
-
-            if space_id == SpaceId::Data && can_send.other {
-                if self.streams.can_send_stream_data() {
-                    let rtt = self.path.rtt.get();
-                    let congestion = self.path.congestion.as_ref() as &dyn crate::congestion::Controller;
-                    
-                    let admitted = self.streams.filter_pending_by_deadline(
-                        now,
-                        |_stream_id, deadline, pending_bytes| {
-                            congestion.can_admit_object(pending_bytes, deadline, now, rtt)
-                        }
-                    );
-
-                    admit_streams = admitted;
-                    if admit_streams.is_empty() {
-                        can_send.other = false;
-                    }
-                } else {
-                    can_send.other = false;
-                }
+            if space_id == SpaceId::Data && can_send.other && !self.streams.can_send_stream_data() {
+                can_send.other = false;
             }
 
             let mut ack_eliciting = !self.spaces[space_id].pending.is_empty(&self.streams)
@@ -901,7 +883,7 @@ impl Connection {
             }
 
             let sent =
-                self.populate_packet(now, space_id, buf, builder.max_size, builder.exact_number, admit_streams);
+                self.populate_packet(now, space_id, buf, builder.max_size, builder.exact_number);
 
             // ACK-only packets should only be sent when explicitly allowed. If we write them due to
             // any other reason, there is a bug which leads to one component announcing write
@@ -1702,7 +1684,7 @@ impl Connection {
 
         // InPersistentCongestion: Determine if all packets in the time period before the newest
         // lost packet, including the edges, are marked lost. PTO computation must always
-        // include max ACK delay, i.e. operate as if in Data space (see RFC9001 §7.6.1).
+        // include max ACK delay, i.e. operate as if in Data space (see RFC9001 sec. 7.6.1).
         let congestion_period =
             self.pto(SpaceId::Data) * self.config.persistent_congestion_threshold;
         let mut persistent_congestion_start: Option<Instant> = None;
@@ -1784,7 +1766,10 @@ impl Connection {
                 if let Some(retransmits) = info.retransmits.get() {
                     // Re-queue crypto frames
                     for crypto_frame in &retransmits.crypto {
-                        self.spaces[pn_space].pending.crypto.push_back(crypto_frame.clone());
+                        self.spaces[pn_space]
+                            .pending
+                            .crypto
+                            .push_back(crypto_frame.clone());
                     }
                 }
                 // Handle stream frame retransmissions
@@ -3177,7 +3162,6 @@ impl Connection {
         buf: &mut Vec<u8>,
         max_size: usize,
         pn: u64,
-        admitted_streams: HashSet<StreamId>
     ) -> SentFrames {
         let mut sent = SentFrames::default();
         let space = &mut self.spaces[space_id];
@@ -3422,18 +3406,22 @@ impl Connection {
         }
 
         if space_id == SpaceId::Data {
-
+            let scheduler_ctx = StreamsDeadlineContext {
+                now,
+                rtt: self.path.rtt.get(),
+                controller: self.path.congestion.as_ref() as &dyn Controller,
+            };
             sent.stream_frames = self.streams.write_stream_frames(
                 buf,
                 max_size,
                 self.config.send_fairness,
-                admitted_streams
+                Some(scheduler_ctx),
             );
 
             self.stats.frame_tx.stream += sent.stream_frames.len() as u64;
         }
         sent
-}
+    }
 
     /// Write pending ACKs into a buffer
     ///
@@ -3658,9 +3646,7 @@ impl Connection {
     pub(crate) fn is_idle(&self) -> bool {
         Timer::VALUES
             .iter()
-            .filter(|&&t| {
-                !matches!(t, Timer::KeepAlive | Timer::PushNewCid | Timer::KeyDiscard)
-            })
+            .filter(|&&t| !matches!(t, Timer::KeepAlive | Timer::PushNewCid | Timer::KeyDiscard))
             .filter_map(|&t| Some((t, self.timers.get(t)?)))
             .min_by_key(|&(_, time)| time)
             .map_or(true, |(timer, _)| timer == Timer::Idle)
@@ -3796,32 +3782,32 @@ impl Connection {
     }
 
     /// New: deadline-aware object admission
-    pub fn can_send_object(&self,
+    pub fn can_send_object(
+        &self,
         object_size: u64,
         deadline: Option<Instant>,
-        now: Instant  // FIX: Add now parameter instead of self.timers.now()
+        now: Instant, // FIX: Add now parameter instead of self.timers.now()
     ) -> bool {
-        let Some(deadline) = deadline else { return true; };
+        let Some(deadline) = deadline else {
+            return true;
+        };
         let rtt = self.path.rtt.get();
 
-        self.path.congestion.can_admit_object(object_size, deadline, now, rtt)
+        self.path
+            .congestion
+            .can_admit_object(object_size, deadline, now, rtt)
     }
 
     /// New: delivery_timeout setter for congestion
-    pub fn set_deadline(&mut self,
-        deadline: Option<Instant>,
-    )
-    {
+    pub fn set_deadline(&mut self, deadline: Option<Instant>) {
         self.path.congestion.set_deadline(deadline)
     }
 
-    pub fn enable_deadline_scheduler(&mut self,
-        deadline_scheduler: bool,
-    )
-    {
-        self.path.congestion.set_deadline_scheduler(deadline_scheduler)
+    pub fn enable_deadline_scheduler(&mut self, deadline_scheduler: bool) {
+        self.path
+            .congestion
+            .set_deadline_scheduler(deadline_scheduler)
     }
-
 }
 
 impl fmt::Debug for Connection {
@@ -4166,5 +4152,3 @@ mod tests {
         }
     }
 }
-
-

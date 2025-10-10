@@ -243,8 +243,14 @@ impl SendStream {
     }
 
     /// Append the size of the subgroup header to the stream
-    pub fn append_subgroup_header_size(&self, subgroup_header_size: u64) -> Result<(), ClosedStream> {
-        let mut conn = self.conn.state.lock("SendStream::append_subgroup_header_size");
+    pub fn append_subgroup_header_size(
+        &self,
+        subgroup_header_size: u64,
+    ) -> Result<(), ClosedStream> {
+        let mut conn = self
+            .conn
+            .state
+            .lock("SendStream::append_subgroup_header_size");
         let mut s = conn.inner.send_stream(self.stream);
         s.append_subgroup_header_size(subgroup_header_size);
         Ok(())
@@ -252,14 +258,21 @@ impl SendStream {
 
     /// Append the size of the object header to the stream
     pub fn append_object_header_size(&self, object_header_size: u64) -> Result<(), ClosedStream> {
-        let mut conn = self.conn.state.lock("SendStream::append_object_header_size");
+        let mut conn = self
+            .conn
+            .state
+            .lock("SendStream::append_object_header_size");
         let mut s = conn.inner.send_stream(self.stream);
         s.append_object_header_size(object_header_size);
         Ok(())
     }
 
     /// Append the size of the object to the stream, with an optional deadline
-    pub fn append_object_size(&self, object_size: u64, deadline: Option<u64>) -> Result<(), ClosedStream> {
+    pub fn append_object_size(
+        &self,
+        object_size: u64,
+        deadline: Option<u64>,
+    ) -> Result<(), ClosedStream> {
         let mut conn = self.conn.state.lock("SendStream::append_object_size");
         let mut s = conn.inner.send_stream(self.stream);
         s.append_object_size(object_size, deadline);

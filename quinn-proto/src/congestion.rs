@@ -97,16 +97,9 @@ pub trait Controller: Send + Sync {
     }
 
     /// New: suggest priority based on deadline + current network state
-    fn set_deadline(
-        &mut self,
-        deadline: Option<Instant>,
-    ) 
-    {
-    }
+    fn set_deadline(&mut self, deadline: Option<Instant>) {}
 
-    fn set_deadline_scheduler(&mut self, deadline_scheduler: bool) {       
-    }
-
+    fn set_deadline_scheduler(&mut self, deadline_scheduler: bool) {}
 }
 
 /// Common congestion controller metrics

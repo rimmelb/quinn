@@ -1,6 +1,6 @@
 use bytes::Bytes;
-use thiserror::Error;
 use std::{collections::VecDeque, time::Instant};
+use thiserror::Error;
 
 use crate::{VarInt, connection::send_buffer::SendBuffer, frame};
 
@@ -48,6 +48,10 @@ impl ChunkProgress {
         self.len.saturating_sub(self.acked)
     }
 
+    fn available(&self) -> u64 {
+        self.written.saturating_sub(self.acked)
+    }
+
     fn is_done(&self) -> bool {
         self.acked >= self.len
     }
@@ -93,11 +97,21 @@ impl ObjectEntry {
     }
 
     fn is_ready(&self) -> bool {
-        self.header.is_ready() && self.payload.is_ready() && self.payload.len > 0
+        if !self.header.is_ready() {
+            return false;
+        }
+        if self.payload.len == 0 {
+            return true;
+        }
+        self.payload.available() > 0
     }
 
     fn outstanding(&self) -> u64 {
         self.header.outstanding() + self.payload.outstanding()
+    }
+
+    fn available(&self) -> u64 {
+        self.header.available() + self.payload.available()
     }
 
     fn total_len(&self) -> u64 {
@@ -119,6 +133,7 @@ pub(super) struct ChunkStatus {
 pub(super) struct ObjectStatus {
     pub ready: bool,
     pub outstanding: u64,
+    pub available: u64,
     pub total_len: u64,
     pub deadline_ms: Option<u64>,
     pub admitted: bool,
@@ -217,6 +232,7 @@ impl StreamHints {
         Some(ObjectStatus {
             ready: entry.is_ready(),
             outstanding: entry.outstanding(),
+            available: entry.available(),
             total_len: entry.total_len(),
             deadline_ms: entry.deadline_ms,
             admitted: entry.admitted,
@@ -266,14 +282,13 @@ impl StreamHints {
         Some(ObjectStatus {
             ready: entry.is_ready(),
             outstanding: entry.outstanding(),
+            available: entry.available(),
             total_len: entry.total_len(),
             deadline_ms: entry.deadline_ms,
             admitted: entry.admitted,
         })
     }
-
 }
-
 
 #[derive(Debug)]
 pub(super) struct Send {
@@ -442,7 +457,7 @@ impl Send {
         // A prioritást csak akkor frissítjük automatikusan, ha van slack számítás felsőbb rétegen.
         self.priority_dirty = true;
     }
-    
+
     /// Internal API: update slack (ms) and map it to a discrete priority band
     pub(super) fn set_slack_ms(&mut self, slack_ms: f64) {
         self.slack_ms = Some(slack_ms);
@@ -452,7 +467,7 @@ impl Send {
             self.priority_dirty = true;
         }
     }
-    
+
     pub(super) fn append_subgroup_header_size(&mut self, subgroup_header_size: u64) {
         self.object_sizes = Some(StreamHints::new());
         if let Some(hints) = &mut self.object_sizes {
@@ -477,20 +492,32 @@ impl Send {
             hints.append_object_size(object_size, deadline);
         }
     }
-
-
 }
 
 /// Alkalmazásban korábban használt threshold mapping integrálása.
 #[inline]
 pub(super) fn slack_to_priority(slack_ms: f64) -> i32 {
-    if !slack_ms.is_finite() { return 127; }
-    if slack_ms <= 0.0 { return 0; }
-    if slack_ms < 50.0 { return 8; }
-    if slack_ms < 100.0 { return 16; }
-    if slack_ms < 250.0 { return 32; }
-    if slack_ms < 500.0 { return 64; }
-    if slack_ms < 1000.0 { return 96; }
+    if !slack_ms.is_finite() {
+        return 127;
+    }
+    if slack_ms <= 0.0 {
+        return 0;
+    }
+    if slack_ms < 50.0 {
+        return 8;
+    }
+    if slack_ms < 100.0 {
+        return 16;
+    }
+    if slack_ms < 250.0 {
+        return 32;
+    }
+    if slack_ms < 500.0 {
+        return 64;
+    }
+    if slack_ms < 1000.0 {
+        return 96;
+    }
     127
 }
 
@@ -658,6 +685,7 @@ pub enum FinishError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn bytes_array() {
@@ -749,5 +777,29 @@ mod tests {
                 assert_eq!(chunks_consumed, 0);
             }
         }
+    }
+
+    #[test]
+    fn object_ready_with_partial_payload() {
+        let mut hints = StreamHints::new();
+        let now = Instant::now();
+
+        hints.append_object_header_size(4);
+        hints.append_object_size(10, None);
+
+        assert_eq!(hints.peek_object_status(now).map(|s| s.ready), Some(false));
+
+        hints.on_bytes_written(4);
+        assert_eq!(hints.peek_object_status(now).map(|s| s.ready), Some(false));
+
+        hints.on_bytes_written(3);
+        let status = hints.peek_object_status(now).expect("object status");
+        assert!(status.ready);
+        assert_eq!(status.available, 7);
+
+        hints.on_bytes_acked(7);
+        let status = hints.peek_object_status(now).expect("object status");
+        assert!(!status.ready);
+        assert_eq!(status.available, 0);
     }
 }

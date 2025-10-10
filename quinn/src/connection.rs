@@ -546,7 +546,12 @@ impl Connection {
     }
 
     // Use u64 and Option<Instant>, and return the bool result.
-    pub fn can_send_suggestion(&self, object_size: u64, deadline: Option<Instant>, now: Instant) -> bool {
+    pub fn can_send_suggestion(
+        &self,
+        object_size: u64,
+        deadline: Option<Instant>,
+        now: Instant,
+    ) -> bool {
         self.0
             .state
             .lock("can_send_suggestion")
@@ -562,7 +567,6 @@ impl Connection {
             .inner
             .set_deadline(deadline)
     }
-
 
     pub fn set_deadline_scheduler(&self, deadline_scheduler: bool) {
         self.0

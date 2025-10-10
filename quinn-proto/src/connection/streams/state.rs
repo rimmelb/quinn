@@ -16,6 +16,7 @@ use super::{
 use crate::{
     Dir, MAX_STREAM_COUNT, Side, StreamId, TransportError, VarInt,
     coding::BufMutExt,
+    congestion::Controller,
     connection::stats::FrameStats,
     frame::{self, FrameStruct, StreamMetaVec},
     transport_parameters::TransportParameters,
@@ -140,6 +141,12 @@ pub struct StreamsState {
     receive_window_shrink_debt: u64,
 }
 
+pub(crate) struct StreamsDeadlineContext<'a> {
+    pub now: Instant,
+    pub rtt: Duration,
+    pub controller: &'a dyn Controller,
+}
+
 impl StreamsState {
     #[allow(unreachable_pub)] // fuzzing only
     pub fn new(
@@ -221,141 +228,7 @@ impl StreamsState {
         self.max_remote[dir as usize] += new_count;
     }
 
-    /// Előszűri a pending stream-eket deadline alapján
-    ///
-    /// Visszaadja azoknak a stream-eknek az ID-jét, amik átmennek az admission control-on.
-    pub(crate) fn filter_pending_by_deadline<F>(
-        &mut self,
-        now: Instant,
-        mut can_admit: F,
-    ) -> std::collections::HashSet<StreamId>
-    where
-        F: FnMut(StreamId, Instant, u64) -> bool,
-    {
-        use std::collections::HashSet;
-        let mut admitted = HashSet::new();
-        let pending_entries: Vec<_> = self
-            .pending
-            .iter()
-            .map(|e| (e.id, e.deadline))
-            .collect();
-
-        let mut to_prune = Vec::new();
-
-        let to_instant = |hint_ms: u64| {
-            let ms = if hint_ms == 0 { 3600 } else { hint_ms };
-            now + Duration::from_millis(ms)
-        };
-
-        for (stream_id, _entry_deadline_ms) in pending_entries {
-            //tracing::debug!(target = "bbr.deadline", ?stream_id, "pending_check_start");
-            let send_entry = match self.send.get_mut(&stream_id) {
-                Some(entry) => entry,
-                None => {
-                    //tracing::debug!(target = "bbr.deadline", ?stream_id, "prune_missing_send_entry");
-                    to_prune.push(stream_id);
-                    continue;
-                }
-            };
-            let send = match send_entry.as_mut() {
-                Some(s) => s,
-                None => {
-                    //tracing::debug!(target = "bbr.deadline", ?stream_id, "prune_uninitialized_send");
-                    to_prune.push(stream_id);
-                    continue;
-                }
-            };
-
-            let pending_bytes = send.pending.unacked();
-            let fin_pending = send.fin_pending;
-            if pending_bytes == 0 && !fin_pending {
-                //tracing::debug!( target = "bbr.deadline", ?stream_id,"prune_empty_stream");
-                to_prune.push(stream_id);
-                continue;
-            }
-
-            if let Some(hints) = send.object_sizes.as_mut() {
-                //tracing::debug!(target = "bbr.deadline", ?stream_id, "object_hints_present");
-                hints.promote_blocked_if_idle(now);
-                if let Some(status) = hints.subgroup_status() {
-                    if status.outstanding > 0 {
-                        if status.ready {
-                            //tracing::debug!( target = "bbr.deadline", ?stream_id, outstanding = status.outstanding, "admitting_subgroup_header");
-                            admitted.insert(stream_id);
-                        }
-                        continue;
-                    }
-                }
-                if let Some(object_status) = hints.peek_object_status(now) {
-                    if object_status.outstanding == 0 {
-                        continue;
-                    }
-                    if !object_status.ready { 
-                        continue;
-                    }
-
-                    if let Some(deadline_ms) = object_status.deadline_ms {
-                        let deadline = to_instant(deadline_ms);
-                        tracing::debug!("{:?}", stream_id);
-                        if object_status.admitted
-                            || can_admit(stream_id, deadline, object_status.total_len)
-                        {
-                            if !object_status.admitted {
-                                hints.mark_current_object_admitted();
-                            }
-                            admitted.insert(stream_id);
-                            
-                        } else 
-                            {
-                            if !send.pending.can_discard_unsent_prefix() {
-                                hints.mark_current_object_admitted();
-                                admitted.insert(stream_id);
-                                continue;
-                            }
-                            let dropped_len =
-                                send.pending.discard_unsent_prefix(object_status.total_len);
-                            if let Some(dropped_total) = hints.discard_current_object() {
-                                tracing::debug!(
-                                    target="bbr.deadline",
-                                    stream_id=?stream_id,
-                                    object_size=dropped_total,
-                                    deadline=?deadline,
-                                    "admission_drop_object"
-                                );
-                            }
-                            if hints.discard_blocked_objects() {
-                                tracing::debug!(
-                                    target="bbr.deadline",
-                                    ?stream_id,
-                                    "admission_drop_blocked_objects"
-                                );
-                            }
-                            if dropped_len > 0 {
-                                self.unacked_data =
-                                    self.unacked_data.saturating_sub(dropped_len);
-                            }
-                            // Immediately continue with the next hinted object (if any)
-                            continue;
-                        }
-                    } else {
-                        if !object_status.admitted {
-                            hints.mark_current_object_admitted();
-                        }
-                        admitted.insert(stream_id);
-                    }
-                    continue;
-                }
-            }
-            admitted.insert(stream_id);
-        }
-        for id in to_prune {
-            self.pending.remove(id);
-        }
-        admitted
-    }
-
-
-        pub(crate) fn abort_pending_stream(
+    pub(crate) fn abort_pending_stream(
         &mut self,
         id: StreamId,
         error_code: VarInt,
@@ -389,9 +262,10 @@ impl StreamsState {
         true
     }
 
-    pub(crate) fn iter_pending_with_bytes(&self) -> impl Iterator<Item=(StreamId,u64)> + '_ {
+    pub(crate) fn iter_pending_with_bytes(&self) -> impl Iterator<Item = (StreamId, u64)> + '_ {
         self.pending.iter().filter_map(|e| {
-            self.send.get(&e.id)
+            self.send
+                .get(&e.id)
                 .and_then(|s| s.as_ref())
                 .map(|snd| {
                     let now = Instant::now();
@@ -499,7 +373,9 @@ impl StreamsState {
 
     fn normalize_pending(&mut self) {
         // Gyors út: ha nincs pending, nincs teendő
-        if self.pending.is_empty() { return; }
+        if self.pending.is_empty() {
+            return;
+        }
 
         // Kigyűjtjük a jelenlegi pending streameket, majd újratöltjük aktuális priority-vel
         let ids: Vec<_> = self.pending.iter().map(|p| p.id).collect();
@@ -759,59 +635,49 @@ impl StreamsState {
         buf: &mut Vec<u8>,
         max_buf_size: usize,
         fair: bool,
-        admitted_streams: std::collections::HashSet<StreamId>,
+        deadline_ctx: Option<StreamsDeadlineContext<'_>>,
     ) -> StreamMetaVec {
         let mut stream_frames = StreamMetaVec::new();
         let mut deferred: Vec<(StreamId, i32, Option<u64>)> = Vec::new();
+        let scheduler_now = deadline_ctx
+            .as_ref()
+            .map(|ctx| ctx.now)
+            .unwrap_or_else(Instant::now);
 
         while buf.len() + frame::Stream::SIZE_BOUND < max_buf_size {
-            let Some(mut stream) = self.pending.pop() else {
+            let Some(pending_entry) = self.pending.pop() else {
                 break;
             };
 
-            // Ha nem admitted: visszatesszük (NEM töröljük!)
-            if !admitted_streams.contains(&stream.id) {
-                trace!(stream = %stream.id, "deferring non-admitted stream");
-                deferred.push((stream.id, stream.priority, stream.deadline));
+            let id = pending_entry.id;
+            let Some(slot) = self.send.get_mut(&id) else {
                 continue;
-            }
-                
-            // Priority dirty check
-            let mut requeue_priority: Option<i32> = None;
-            let mut new_deadline: Option<u64> = None;
-            {
-                if let Some(entry) = self.send.get(&stream.id) {
-                    if let Some(send) = entry.as_ref() {
-                        if send.priority_dirty { 
-                            requeue_priority = Some(send.priority); 
-                        }
-                        if stream.deadline.is_none() { 
-                            new_deadline = send.deadline; 
-                        }
-                    }
-                }
-            }
-            if let Some(p) = requeue_priority {
-                if let Some(entry_mut) = self.send.get_mut(&stream.id) { 
-                    if let Some(send_mut) = entry_mut.as_mut() { 
-                        send_mut.priority_dirty = false; 
-                    } 
-                }
-                self.pending.push_pending(stream.id, p, stream.deadline);
+            };
+            let Some(stream_obj) = slot.as_mut() else {
                 continue;
-            }
-            if stream.deadline.is_none() && new_deadline.is_some() { 
-                stream.deadline = new_deadline; 
-            }
-
-            let id = stream.id;
-
-            let stream_obj = match self.send.get_mut(&id).and_then(|s| s.as_mut()) {
-                Some(s) => s,
-                None => continue,
             };
 
             if stream_obj.is_reset() {
+                continue;
+            }
+
+            if stream_obj.priority_dirty {
+                let new_priority = stream_obj.priority;
+                let new_deadline = stream_obj.deadline;
+                stream_obj.priority_dirty = false;
+                self.pending.push_pending(id, new_priority, new_deadline);
+                continue;
+            }
+
+            if !stream_ready_for_transmit(
+                id,
+                stream_obj,
+                deadline_ctx.as_ref(),
+                scheduler_now,
+                &mut self.unacked_data,
+            ) {
+                trace!(stream = %id, "deferring non-admitted stream");
+                deferred.push((id, stream_obj.priority, stream_obj.deadline));
                 continue;
             }
 
@@ -825,14 +691,21 @@ impl StreamsState {
 
             if stream_obj.is_pending() {
                 if fair {
-                    self.pending.push_pending(id, stream_obj.priority, stream_obj.deadline);
+                    self.pending
+                        .push_pending(id, stream_obj.priority, stream_obj.deadline);
                 } else {
                     self.pending.reinsert_pending(id, stream_obj.priority);
                 }
             }
 
             let meta = frame::StreamMeta { id, offsets, fin };
-            trace!(id = %meta.id, off = meta.offsets.start, len = meta.offsets.end - meta.offsets.start, fin = meta.fin, "STREAM");
+            trace!(
+                id = %meta.id,
+                off = meta.offsets.start,
+                len = meta.offsets.end - meta.offsets.start,
+                fin = meta.fin,
+                "STREAM"
+            );
             meta.encode(encode_length, buf);
 
             let mut offsets = meta.offsets.clone();
@@ -846,11 +719,9 @@ impl StreamsState {
 
         for (id, priority, deadline) in deferred {
             if let Some(send) = self.send.get(&id).and_then(|s| s.as_ref()) {
-                self.pending
-                    .push_pending(id, send.priority, send.deadline);
+                self.pending.push_pending(id, send.priority, send.deadline);
             } else {
-                self.pending
-                    .push_pending(id, priority, deadline);
+                trace!(stream = %id, "stream exhausted after drop, not re-queuing");
             }
         }
 
@@ -915,7 +786,8 @@ impl StreamsState {
             Some(x) => x,
         };
         if !stream.is_pending() {
-            self.pending.push_pending(frame.id, stream.priority, stream.deadline);
+            self.pending
+                .push_pending(frame.id, stream.priority, stream.deadline);
         }
         stream.fin_pending |= frame.fin;
         stream.pending.retransmit(frame.offsets);
@@ -935,7 +807,8 @@ impl StreamsState {
                     continue;
                 }
                 if !stream.is_pending() {
-                    self.pending.push_pending(id, stream.priority, stream.deadline);
+                    self.pending
+                        .push_pending(id, stream.priority, stream.deadline);
                 }
                 stream.pending.retransmit_all_for_0rtt();
             }
@@ -1198,7 +1071,6 @@ impl StreamsState {
             Dir::Bi => self.initial_max_stream_data_bidi_remote,
         }
     }
-
 }
 
 #[inline]
@@ -1206,6 +1078,96 @@ pub(super) fn get_or_insert_send(
     max_data: VarInt,
 ) -> impl Fn(&mut Option<Box<Send>>) -> &mut Box<Send> {
     move |opt| opt.get_or_insert_with(|| Send::new(max_data))
+}
+
+fn stream_ready_for_transmit(
+    stream_id: StreamId,
+    send: &mut Send,
+    scheduler: Option<&StreamsDeadlineContext<'_>>,
+    now: Instant,
+    unacked_data: &mut u64,
+) -> bool {
+    let pending_bytes = send.pending.unacked();
+    if pending_bytes == 0 && !send.fin_pending {
+        return false;
+    }
+
+    if let Some(hints) = send.object_sizes.as_mut() {
+        hints.promote_blocked_if_idle(now);
+        if let Some(status) = hints.subgroup_status() {
+            if status.outstanding > 0 {
+                return status.ready;
+            }
+        }
+        if let Some(object_status) = hints.peek_object_status(now) {
+            if object_status.outstanding == 0 {
+                return false;
+            }
+            if !object_status.ready {
+                return false;
+            }
+
+            if let Some(deadline_ms) = object_status.deadline_ms {
+                let deadline_ms = if deadline_ms == 0 { 3600 } else { deadline_ms };
+                let deadline = now + Duration::from_millis(deadline_ms);
+                let mut admitted = object_status.admitted;
+                if !admitted {
+                    let allow = scheduler
+                        .map(|ctx| {
+                            ctx.controller.can_admit_object(
+                                object_status.total_len,
+                                deadline,
+                                ctx.now,
+                                ctx.rtt,
+                            )
+                        })
+                        .unwrap_or(true);
+                    if allow {
+                        hints.mark_current_object_admitted();
+                        admitted = true;
+                    }
+                }
+                if admitted {
+                    return true;
+                }
+
+                if !send.pending.can_discard_unsent_prefix() {
+                    hints.mark_current_object_admitted();
+                    return true;
+                }
+
+                let dropped_len = send.pending.discard_unsent_prefix(object_status.total_len);
+                if let Some(dropped_total) = hints.discard_current_object() {
+                    debug!(
+                        target = "bbr.deadline",
+                        stream_id = ?stream_id,
+                        object_size = dropped_total,
+                        deadline = ?deadline,
+                        "admission_drop_object"
+                    );
+                }
+                if hints.discard_blocked_objects() {
+                    debug!(
+                        target = "bbr.deadline",
+                        ?stream_id,
+                        "admission_drop_blocked_objects"
+                    );
+                }
+                if dropped_len > 0 {
+                    *unacked_data = unacked_data.saturating_sub(dropped_len);
+                }
+                return false;
+            } else {
+                if !object_status.admitted {
+                    hints.mark_current_object_admitted();
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    true
 }
 
 #[inline]
@@ -1628,8 +1590,8 @@ mod tests {
         high.write(b"high").unwrap();
 
         let mut buf = Vec::with_capacity(40);
-        
-        let meta = server.write_stream_frames(&mut buf, 40, true);
+
+        let meta = server.write_stream_frames(&mut buf, 40, true, None);
         assert_eq!(meta[0].id, id_high);
         assert_eq!(meta[1].id, id_mid);
         assert_eq!(meta[2].id, id_low);
@@ -1688,7 +1650,7 @@ mod tests {
         high.set_priority(-1).unwrap();
 
         let mut buf = Vec::with_capacity(1000);
-        let meta = server.write_stream_frames(&mut buf, 40, true);
+        let meta = server.write_stream_frames(&mut buf, 40, true, None);
         assert_eq!(meta.len(), 1);
         assert_eq!(meta[0].id, id_high);
 
@@ -1696,7 +1658,7 @@ mod tests {
         assert_eq!(server.pending.len(), 2);
 
         // Send the remaining data. The initial mid priority one should go first now
-        let meta = server.write_stream_frames(&mut buf, 1000, true);
+        let meta = server.write_stream_frames(&mut buf, 1000, true, None);
         assert_eq!(meta.len(), 2);
         assert_eq!(meta[0].id, id_mid);
         assert_eq!(meta[1].id, id_high);
@@ -1757,7 +1719,7 @@ mod tests {
             // loop until all the streams are written
             loop {
                 let buf_len = buf.len();
-                let meta = server.write_stream_frames(&mut buf, buf_len + 40, fair);
+                let meta = server.write_stream_frames(&mut buf, buf_len + 40, fair, None);
                 if meta.is_empty() {
                     break;
                 }
@@ -1828,7 +1790,7 @@ mod tests {
 
         // Write the first chunk of stream_a
         let buf_len = buf.len();
-        let meta = server.write_stream_frames(&mut buf, buf_len + 40, false);
+        let meta = server.write_stream_frames(&mut buf, buf_len + 40, false, None);
         assert!(!meta.is_empty());
         metas.extend(meta);
 
@@ -1845,7 +1807,7 @@ mod tests {
         // loop until all the streams are written
         loop {
             let buf_len = buf.len();
-            let meta = server.write_stream_frames(&mut buf, buf_len + 40, false);
+            let meta = server.write_stream_frames(&mut buf, buf_len + 40, false, None);
             if meta.is_empty() {
                 break;
             }

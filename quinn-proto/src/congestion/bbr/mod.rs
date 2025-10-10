@@ -3,7 +3,6 @@ use std::fmt::Debug;
 
 use std::sync::{Arc, Mutex};
 
-
 use rand::{Rng, SeedableRng};
 
 use crate::congestion::ControllerMetrics;
@@ -66,14 +65,13 @@ pub struct Bbr {
 
     // --- NEW: single-path deadline scheduler state (virt. queue in packets) ---
     deadline_state: Arc<Mutex<DeadlineState>>,
-
 }
 
 #[derive(Debug, Clone)]
 pub struct DeadlineConfig {
     pub enabled: bool,
-    pub beta: f64,       // Conservative factor for pps estimation
-    pub guard_ms: u64,   // Guard time for jitter
+    pub beta: f64,        // Conservative factor for pps estimation
+    pub guard_ms: u64,    // Guard time for jitter
     pub default_mss: u32, // Fallback MSS
 }
 
@@ -96,9 +94,12 @@ struct DeadlineState {
 
 impl Default for DeadlineState {
     fn default() -> Self {
-         Self { q_pkts: 0.0, last: None }
-     }
- }
+        Self {
+            q_pkts: 0.0,
+            last: None,
+        }
+    }
+}
 
 impl Bbr {
     /// Construct a state using the given `config` and current time `now`
@@ -363,49 +364,50 @@ impl Bbr {
         self.min_cwnd
     }
 
-fn calculate_pacing_rate(&mut self) {
-    // --- Eredeti BBR logika (fallback) ---
-    let bw = self.max_bandwidth.get_estimate();
-    if bw == 0 {
-        return;
-    }
-    let target_rate = (bw as f64 * self.pacing_gain as f64) as u64;
-    if self.is_at_full_bandwidth {
-        self.pacing_rate = target_rate;
-        return;
-    }
+    fn calculate_pacing_rate(&mut self) {
+        // --- Eredeti BBR logika (fallback) ---
+        let bw = self.max_bandwidth.get_estimate();
+        if bw == 0 {
+            return;
+        }
+        let target_rate = (bw as f64 * self.pacing_gain as f64) as u64;
+        if self.is_at_full_bandwidth {
+            self.pacing_rate = target_rate;
+            return;
+        }
 
-    // Pace: initial_window / RTT, amint van RTT
-    if self.pacing_rate == 0 && self.min_rtt.as_nanos() != 0 {
-        self.pacing_rate =
-            BandwidthEstimation::bw_from_delta(self.init_cwnd, self.min_rtt).unwrap();
-        return;
-    }
+        // Pace: initial_window / RTT, amint van RTT
+        if self.pacing_rate == 0 && self.min_rtt.as_nanos() != 0 {
+            self.pacing_rate =
+                BandwidthEstimation::bw_from_delta(self.init_cwnd, self.min_rtt).unwrap();
+            return;
+        }
 
-    // Startupban ne csökkentsünk pacinget
-    if self.pacing_rate < target_rate {
-        self.pacing_rate = target_rate;
-    }
+        // Startupban ne csökkentsünk pacinget
+        if self.pacing_rate < target_rate {
+            self.pacing_rate = target_rate;
+        }
 
-    // Alsó korlát, ha be van állítva
-    if let Some(floor_bps) = Some(self.config.min_pacing_bps) {
-        if floor_bps > 0 && self.min_rtt.as_nanos() != 0 {
-            let win_bytes = self.window();
-            let rate_cwnd = ((win_bytes as u128 * 8_000_000u128)
-                / (self.min_rtt.as_micros().max(1) as u128)) as u64;
+        // Alsó korlát, ha be van állítva
+        if let Some(floor_bps) = Some(self.config.min_pacing_bps) {
+            if floor_bps > 0 && self.min_rtt.as_nanos() != 0 {
+                let win_bytes = self.window();
+                let rate_cwnd = ((win_bytes as u128 * 8_000_000u128)
+                    / (self.min_rtt.as_micros().max(1) as u128))
+                    as u64;
 
-            let loss_blocking = self.loss_state.has_losses() || self.recovery_state.in_recovery();
-            if !loss_blocking {
-                let desired = floor_bps;
-                let capped = desired.min(rate_cwnd.max(1));
-                if capped > self.pacing_rate {
-                    self.pacing_rate = capped;
+                let loss_blocking =
+                    self.loss_state.has_losses() || self.recovery_state.in_recovery();
+                if !loss_blocking {
+                    let desired = floor_bps;
+                    let capped = desired.min(rate_cwnd.max(1));
+                    if capped > self.pacing_rate {
+                        self.pacing_rate = capped;
+                    }
                 }
             }
         }
     }
-}
-
 
     fn calculate_cwnd(&mut self, bytes_acked: u64, excess_acked: u64) {
         if self.mode == Mode::ProbeRtt {
@@ -585,15 +587,14 @@ impl Controller for Bbr {
     }
 
     fn window(&self) -> u64 {
-    if self.mode == Mode::ProbeRtt {
-        return self.get_probe_rtt_cwnd();
+        if self.mode == Mode::ProbeRtt {
+            return self.get_probe_rtt_cwnd();
+        }
+        if self.recovery_state.in_recovery() && self.mode != Mode::Startup {
+            return self.cwnd.min(self.recovery_window);
+        }
+        self.cwnd
     }
-    if self.recovery_state.in_recovery() && self.mode != Mode::Startup {
-        return self.cwnd.min(self.recovery_window);
-    }
-    self.cwnd
-    }
-
 
     fn metrics(&self) -> ControllerMetrics {
         ControllerMetrics {
@@ -616,7 +617,7 @@ impl Controller for Bbr {
     }
 
     /// Enable or disable the deadline-aware scheduler at runtime
-    /// 
+    ///
     /// This allows toggling deadline admission control without recreating the BBR instance
     fn set_deadline_scheduler(&mut self, enabled: bool) {
         if let Some(ref mut cfg) = self.deadline_config {
@@ -635,121 +636,135 @@ impl Controller for Bbr {
         tracing::info!(target: "bbr.deadline", enabled, "BBR deadline scheduler enabled flag updated");
     }
 
-// ...existing code...
-fn can_admit_object(
-    &self,
-    object_size: u64,
-    object_deadline: Instant,
-    now: Instant,
-    rtt_hint: Duration,
-) -> bool {
-    let Some(cfg) = self.deadline_config.as_ref().filter(|c| c.enabled) else {
-        return true;
-    };
+    // ...existing code...
+    fn can_admit_object(
+        &self,
+        object_size: u64,
+        object_deadline: Instant,
+        now: Instant,
+        rtt_hint: Duration,
+    ) -> bool {
+        let Some(cfg) = self.deadline_config.as_ref().filter(|c| c.enabled) else {
+            return true;
+        };
 
-    let use_rtt = if self.min_rtt.as_nanos() != 0 { self.min_rtt } else { rtt_hint };
-    if use_rtt.as_nanos() == 0 { return true; }
-
-    let cwnd_bytes = self.window();
-    let bw_bytes_per_sec = self.max_bandwidth.get_estimate();
-    let pacing_bytes_per_sec = self.pacing_rate;
-
-    let cwnd_rate = (cwnd_bytes as f64 * 8.0) / use_rtt.as_secs_f64();
-    let app_rate  = (bw_bytes_per_sec as f64) * 8.0;
-    let pace_rate = (pacing_bytes_per_sec as f64) * 8.0;
-
-    let mut effective_bps = f64::INFINITY;
-    for r in [cwnd_rate, app_rate, pace_rate] {
-        if r > 0.0 { effective_bps = effective_bps.min(r); }
-    }
-    if !effective_bps.is_finite() || effective_bps <= 0.0 {
-        return true;
-    }
-
-    let mss = cfg.default_mss as f64;
-    if object_size <= (2 * cfg.default_mss) as u64 {
-        return true;
-    }
-
-    let pps: f64 = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
-
-    let (snapshot_q, snapshot_last) = {
-        let st = self.deadline_state.lock().unwrap();
-        (st.q_pkts, st.last)
-    };
-    self.deadline_decay_queue(now, pps, use_rtt);
-    {
-        let mut st = self.deadline_state.lock().unwrap();
-        st.last = Some(now);
-    }
-
-    let (virt_q_after_decay, last_seen) = {
-        let st = self.deadline_state.lock().unwrap();
-        (st.q_pkts, st.last)
-    };
-
-    let bdp_pkts = (cwnd_bytes as f64 / mss).max(1.0);
-    let q_cap = (bdp_pkts * 4.0).clamp(50.0, 10_000.0);
-    let is_stale = last_seen.map(|t| now.saturating_duration_since(t) > (use_rtt * 2)).unwrap_or(false);
-    let virt_q_sanitized = if is_stale && virt_q_after_decay > q_cap { q_cap } else { virt_q_after_decay.min(q_cap) };
-
-    let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1) as f64;
-
-    let trans_time = use_rtt / 2 + Duration::from_secs_f64((virt_q_sanitized + pkt_count) / pps);
-    let guard = Duration::from_millis(cfg.guard_ms);
-
-    let admit = now + trans_time + guard <= object_deadline;
-
-    if !admit {
-        // rollback (but keep the decay effect so later streams see the reduced backlog)
-        let mut st = self.deadline_state.lock().unwrap();
-        st.q_pkts = virt_q_after_decay;
-        st.last = last_seen;
-        tracing::debug!(
-            target="bbr.deadline", 
-            admit=false, 
-            reason="deadline_exceeded",
-            global_timeout=?self.delivery_timeout,
-            object_deadline=?object_deadline,
-            effective_deadline=?object_deadline,
-            needed_time_ms=((trans_time + guard).as_micros() as f64 / 1000.0),
-            virt_q_before=snapshot_q,
-            virt_q_after_decay=virt_q_after_decay,
-            pkt_count=pkt_count,
-            object_size,
-            use_rtt_ms=use_rtt.as_millis(),
-            guard_ms=cfg.guard_ms,
-            pps,
-            effective_bps,
-            cwnd_bytes,
-            pacing_bytes_per_sec,
-            bw_bytes_per_sec
-        );
-        return false;
-    }
-
-    // commit
-    {
-        let mut st = self.deadline_state.lock().unwrap();
-        st.q_pkts = (virt_q_sanitized + pkt_count).min(q_cap);
-    }
-    // tracing::debug!(
-    //     target="bbr.deadline", 
-    //     admit=true, 
-    //     global_timeout=?self.delivery_timeout,
-    //     object_deadline=?object_deadline,
-    //     effective_deadline=?effective_deadline,
-    //     virt_q_before=snapshot_q, 
-    //     virt_q_after=self.deadline_state.lock().unwrap().q_pkts
-    // );
-    true
-}
-
-    
-    fn set_deadline(&mut self, deadline: Option<Instant>) {
-            self.delivery_timeout = deadline
+        let use_rtt = if self.min_rtt.as_nanos() != 0 {
+            self.min_rtt
+        } else {
+            rtt_hint
+        };
+        if use_rtt.as_nanos() == 0 {
+            return true;
         }
 
+        let cwnd_bytes = self.window();
+        let bw_bytes_per_sec = self.max_bandwidth.get_estimate();
+        let pacing_bytes_per_sec = self.pacing_rate;
+
+        let cwnd_rate = (cwnd_bytes as f64 * 8.0) / use_rtt.as_secs_f64();
+        let app_rate = (bw_bytes_per_sec as f64) * 8.0;
+        let pace_rate = (pacing_bytes_per_sec as f64) * 8.0;
+
+        let mut effective_bps = f64::INFINITY;
+        for r in [cwnd_rate, app_rate, pace_rate] {
+            if r > 0.0 {
+                effective_bps = effective_bps.min(r);
+            }
+        }
+        if !effective_bps.is_finite() || effective_bps <= 0.0 {
+            return true;
+        }
+
+        let mss = cfg.default_mss as f64;
+        if object_size <= (2 * cfg.default_mss) as u64 {
+            return true;
+        }
+
+        let pps: f64 = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
+
+        let (snapshot_q, snapshot_last) = {
+            let st = self.deadline_state.lock().unwrap();
+            (st.q_pkts, st.last)
+        };
+        self.deadline_decay_queue(now, pps, use_rtt);
+        {
+            let mut st = self.deadline_state.lock().unwrap();
+            st.last = Some(now);
+        }
+
+        let (virt_q_after_decay, last_seen) = {
+            let st = self.deadline_state.lock().unwrap();
+            (st.q_pkts, st.last)
+        };
+
+        let bdp_pkts = (cwnd_bytes as f64 / mss).max(1.0);
+        let q_cap = (bdp_pkts * 4.0).clamp(50.0, 10_000.0);
+        let is_stale = last_seen
+            .map(|t| now.saturating_duration_since(t) > (use_rtt * 2))
+            .unwrap_or(false);
+        let virt_q_sanitized = if is_stale && virt_q_after_decay > q_cap {
+            q_cap
+        } else {
+            virt_q_after_decay.min(q_cap)
+        };
+
+        let pkt_count =
+            ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1) as f64;
+
+        let trans_time =
+            use_rtt / 2 + Duration::from_secs_f64((virt_q_sanitized + pkt_count) / pps);
+        let guard = Duration::from_millis(cfg.guard_ms);
+
+        let admit = now + trans_time + guard <= object_deadline;
+
+        if !admit {
+            // rollback (but keep the decay effect so later streams see the reduced backlog)
+            let mut st = self.deadline_state.lock().unwrap();
+            st.q_pkts = virt_q_after_decay;
+            st.last = last_seen;
+            tracing::debug!(
+                target="bbr.deadline",
+                admit=false,
+                reason="deadline_exceeded",
+                global_timeout=?self.delivery_timeout,
+                object_deadline=?object_deadline,
+                effective_deadline=?object_deadline,
+                needed_time_ms=((trans_time + guard).as_micros() as f64 / 1000.0),
+                virt_q_before=snapshot_q,
+                virt_q_after_decay=virt_q_after_decay,
+                pkt_count=pkt_count,
+                object_size,
+                use_rtt_ms=use_rtt.as_millis(),
+                guard_ms=cfg.guard_ms,
+                pps,
+                effective_bps,
+                cwnd_bytes,
+                pacing_bytes_per_sec,
+                bw_bytes_per_sec
+            );
+            return false;
+        }
+
+        // commit
+        {
+            let mut st = self.deadline_state.lock().unwrap();
+            st.q_pkts = (virt_q_sanitized + pkt_count).min(q_cap);
+        }
+        // tracing::debug!(
+        //     target="bbr.deadline",
+        //     admit=true,
+        //     global_timeout=?self.delivery_timeout,
+        //     object_deadline=?object_deadline,
+        //     effective_deadline=?effective_deadline,
+        //     virt_q_before=snapshot_q,
+        //     virt_q_after=self.deadline_state.lock().unwrap().q_pkts
+        // );
+        true
+    }
+
+    fn set_deadline(&mut self, deadline: Option<Instant>) {
+        self.delivery_timeout = deadline
+    }
 }
 
 /// Configuration for the [`Bbr`] congestion controller
