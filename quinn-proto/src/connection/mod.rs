@@ -893,12 +893,20 @@ impl Connection {
                 can_send.other = false;
             }
 
+            // NEW: avoid spinning when admission blocks all streams for this tick
             if space_id == SpaceId::Data
                 && sent.stream_frames.is_empty()
                 && self.streams.admission_blocked()
-                && !self.spaces[SpaceId::Data].ping_pending
             {
+                // ensure we have an ack-eliciting wake soon
                 self.spaces[SpaceId::Data].ping_pending = true;
+
+                // we advertised "other", but nothing could be written — correct it
+                can_send.other = false;
+
+                // do not keep trying Data space in this transmit loop
+                space_idx += 1;
+                continue;
             }
 
             // ACK-only packets should only be sent when explicitly allowed. If we write them due to
