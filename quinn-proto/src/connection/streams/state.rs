@@ -633,6 +633,30 @@ impl StreamsState {
         }
     }
 
+    #[inline]
+    fn has_sendable_data(send: &Send, now: Instant) -> bool {
+        if send.fin_pending {
+            return true;
+        }
+        if let Some(hints) = send.object_sizes.as_ref() {
+            if let Some(sub) = hints.subgroup_status() {
+                if sub.ready && sub.outstanding > 0 {
+                    return true;
+                }
+            }
+            if let Some(obj) = hints.peek_object_status(now) {
+                // Objektum csak akkor küldhető, ha teljesen ready ÉS admitted
+                if obj.ready && obj.admitted {
+                    return true;
+                }
+            }
+            // Hints mellett a nyers pending bájtok (pl. object header) önmagukban ne tartsák pendingben
+            return false;
+        }
+        // Hints nélkül marad a klasszikus viselkedés
+        send.pending.unacked() > 0
+    }
+
     pub(crate) fn write_stream_frames(
         &mut self,
         buf: &mut Vec<u8>,
@@ -650,6 +674,8 @@ impl StreamsState {
         self.deadline_blocked_last = false;
 
         while buf.len() + frame::Stream::SIZE_BOUND < max_buf_size {
+            tracing::debug!(target="bbr.deadline", reason="pörög");
+
             let Some(pending_entry) = self.pending.pop() else {
                 self.deadline_blocked_last = false;
                 break;
@@ -682,9 +708,20 @@ impl StreamsState {
                 scheduler_now,
                 &mut self.unacked_data,
                 &mut self.events,
-            ) 
-            {
-            continue;
+            ) {
+                // Csak akkor tegyük vissza, ha VAN ténylegesen küldhető adat
+                let sendable = Self::has_sendable_data(stream_obj, scheduler_now);
+                if sendable {
+                    blocked_by_admission = true;
+                    deferred.push((id, stream_obj.priority, stream_obj.deadline));
+                } else {
+                    tracing::debug!(
+                        target="bbr.deadline",
+                        stream = %id,
+                        "stream has no sendable data, removing from pending"
+                    );
+                }
+                continue;
             }
 
             let max_buf_size = max_buf_size - buf.len() - 1 - VarInt::size(id.into());
@@ -721,6 +758,32 @@ impl StreamsState {
                 buf.put_slice(data);
             }
             stream_frames.push(meta);
+        }
+
+        let total_bytes: u64 = stream_frames
+            .iter()
+            .map(|meta| meta.offsets.end - meta.offsets.start)
+            .sum();
+
+        for (id, priority, deadline) in deferred {
+            if let Some(send) = self.send.get(&id).and_then(|s| s.as_ref()) {
+                if send.is_reset() {
+                    self.send.remove(&id);
+                    self.pending.remove(id);
+                    continue;
+                }
+
+                // Ugyanaz a predikátum a re-queue-hoz
+                if Self::has_sendable_data(send, scheduler_now) {
+                    self.pending.push_pending(id, priority, deadline);
+                } else {
+                    tracing::debug!(
+                        target="bbr.deadline",
+                        stream = %id,
+                        "stream exhausted after admission check, not re-queuing"
+                    );
+                }
+            }
         }
 
         stream_frames
@@ -1153,8 +1216,6 @@ impl StreamsState {
                     // );
                     return true;
                 } else {
-                    // ❌ NEM ADMITTED: ELDOBJUK az objektumot AZONNAL
-                    // ✅ Csak akkor dobhatjuk el, ha SEMMIT nem küldtünk belőle
                     if !send.pending.can_discard_unsent_prefix() {
                         // Ha már elkezdtük küldeni, akkor FORCE-ADMIT
                         tracing::debug!(
@@ -1166,8 +1227,6 @@ impl StreamsState {
                         hints.mark_current_object_admitted();
                         return true;
                     }
-                    
-                    // ✅ Az objektum TELJESEN UNSENT, eldobhatjuk
                     let dropped_len = send.pending.discard_unsent_prefix(object_size);
                     let dropped_total = hints.discard_current_object().unwrap_or(object_size);
                     
