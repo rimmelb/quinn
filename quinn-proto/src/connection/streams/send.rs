@@ -20,51 +20,41 @@ impl ChunkProgress {
         }
     }
 
-    fn apply_write(&mut self, bytes: u64) -> u64 {
-        if bytes == 0 || self.written >= self.len {
-            return bytes;
-        }
-        let need = self.len - self.written;
-        let take = need.min(bytes);
-        self.written += take;
-        bytes - take
-    }
-
-    fn apply_ack(&mut self, bytes: u64) -> u64 {
-        if bytes == 0 || self.acked >= self.len {
-            return bytes;
-        }
-        let need = self.len - self.acked;
-        let take = need.min(bytes);
-        self.acked += take;
-        bytes - take
-    }
-
     fn is_ready(&self) -> bool {
-        self.written >= self.len
+        self.len > 0
     }
 
     fn outstanding(&self) -> u64 {
         self.len.saturating_sub(self.acked)
     }
 
-    fn available(&self) -> u64 {
-        self.written.saturating_sub(self.acked)
+    /// Apply write, returns remaining bytes
+    fn apply_write(&mut self, mut bytes: u64) -> u64 {
+        let writable = self.len.saturating_sub(self.written);
+        let consume = bytes.min(writable);
+        self.written += consume;
+        bytes.saturating_sub(consume)
+    }
+
+    /// Apply ack, returns remaining bytes
+    fn apply_ack(&mut self, mut bytes: u64) -> u64 {
+        let ackable = self.written.saturating_sub(self.acked);
+        let consume = bytes.min(ackable);
+        self.acked += consume;
+        bytes.saturating_sub(consume)
     }
 
     fn is_done(&self) -> bool {
-        self.acked >= self.len
+        self.len > 0 && self.acked >= self.len
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ObjectEntry {
+#[derive(Debug)]
+struct ObjectEntry {
     header: ChunkProgress,
     payload: ChunkProgress,
     deadline_ms: Option<u64>,
     admitted: bool,
-    failed_attempts: u8,
-    retry_at: Option<Instant>,
 }
 
 impl ObjectEntry {
@@ -74,36 +64,16 @@ impl ObjectEntry {
             payload: ChunkProgress::new(0),
             deadline_ms: None,
             admitted: false,
-            failed_attempts: 0,
-            retry_at: None,
         }
     }
 
     fn set_payload(&mut self, payload_len: u64, deadline_ms: Option<u64>) {
         self.payload = ChunkProgress::new(payload_len);
         self.deadline_ms = deadline_ms;
-        self.failed_attempts = 0;
-        self.retry_at = None;
-    }
-
-    fn apply_write(&mut self, bytes: u64) -> u64 {
-        let bytes = self.header.apply_write(bytes);
-        self.payload.apply_write(bytes)
-    }
-
-    fn apply_ack(&mut self, bytes: u64) -> u64 {
-        let bytes = self.header.apply_ack(bytes);
-        self.payload.apply_ack(bytes)
     }
 
     fn is_ready(&self) -> bool {
-        if !self.header.is_ready() {
-            return false;
-        }
-        if self.payload.len == 0 {
-            return true;
-        }
-        self.payload.written >= self.payload.len
+        self.header.is_ready() && self.payload.is_ready()
     }
 
     fn outstanding(&self) -> u64 {
@@ -111,11 +81,25 @@ impl ObjectEntry {
     }
 
     fn available(&self) -> u64 {
-        self.header.available() + self.payload.available()
+        let h = self.header.len.saturating_sub(self.header.written);
+        let p = self.payload.len.saturating_sub(self.payload.written);
+        h + p
     }
 
     fn total_len(&self) -> u64 {
         self.header.len + self.payload.len
+    }
+
+    fn apply_write(&mut self, mut bytes: u64) -> u64 {
+        bytes = self.header.apply_write(bytes);
+        bytes = self.payload.apply_write(bytes);
+        bytes
+    }
+
+    fn apply_ack(&mut self, mut bytes: u64) -> u64 {
+        bytes = self.header.apply_ack(bytes);
+        bytes = self.payload.apply_ack(bytes);
+        bytes
     }
 
     fn is_done(&self) -> bool {
@@ -123,13 +107,7 @@ impl ObjectEntry {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct ChunkStatus {
-    pub ready: bool,
-    pub outstanding: u64,
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(super) struct ObjectStatus {
     pub ready: bool,
     pub outstanding: u64,
@@ -137,6 +115,11 @@ pub(super) struct ObjectStatus {
     pub total_len: u64,
     pub deadline_ms: Option<u64>,
     pub admitted: bool,
+}
+
+pub(super) struct ChunkStatus {
+    pub ready: bool,
+    pub outstanding: u64,
 }
 
 #[derive(Debug)]
@@ -176,7 +159,6 @@ impl StreamHints {
         self.objects.push_back(entry);
     }
 
-    /// Subgroup header kész?
     pub(super) fn subgroup_status(&self) -> Option<ChunkStatus> {
         self.subgroup.as_ref().map(|chunk| ChunkStatus {
             ready: chunk.is_ready(),
@@ -184,7 +166,6 @@ impl StreamHints {
         })
     }
 
-    /// Első object státusza
     pub(super) fn current_object_status(&self) -> Option<ObjectStatus> {
         let entry = self.objects.front()?;
         Some(ObjectStatus {
@@ -197,19 +178,16 @@ impl StreamHints {
         })
     }
 
-    /// Mark current object as admitted
     pub(super) fn mark_current_object_admitted(&mut self) {
         if let Some(entry) = self.objects.front_mut() {
             entry.admitted = true;
         }
     }
 
-    /// Discard current object
     pub(super) fn discard_current_object(&mut self) -> Option<u64> {
         self.objects.pop_front().map(|entry| entry.total_len())
     }
 
-    /// Van-e részleges object (header kész, payload nem)
     pub fn has_partial_object(&self) -> bool {
         self.current_object_status()
             .map(|s| s.total_len > 0 && !s.ready)
@@ -220,14 +198,27 @@ impl StreamHints {
         if bytes == 0 {
             return;
         }
+        tracing::trace!(target: "bbr.hints", bytes, "on_bytes_written");
+
+        // Subgroup header először
         if let Some(sub) = &mut self.subgroup {
+            let before = bytes;
             bytes = sub.apply_write(bytes);
+            tracing::trace!(target: "bbr.hints", consumed = before - bytes, "subgroup write");
         }
+
+        // Objektumok sorban
         for entry in self.objects.iter_mut() {
             if bytes == 0 {
                 break;
             }
+            let before = bytes;
             bytes = entry.apply_write(bytes);
+            tracing::trace!(target: "bbr.hints", consumed = before - bytes, "object write");
+        }
+
+        if bytes > 0 {
+            tracing::warn!(target: "bbr.hints", leftover = bytes, "unconsumed bytes in on_bytes_written");
         }
     }
 
@@ -235,25 +226,39 @@ impl StreamHints {
         if bytes == 0 {
             return;
         }
+        tracing::trace!(target: "bbr.hints", bytes, "on_bytes_acked");
+
+        // Subgroup header először
         if let Some(sub) = &mut self.subgroup {
+            let before = bytes;
             bytes = sub.apply_ack(bytes);
+            tracing::trace!(target: "bbr.hints", consumed = before - bytes, "subgroup ack");
             if sub.is_done() {
+                tracing::debug!(target: "bbr.hints", "subgroup header done");
                 self.subgroup = None;
             }
         }
+
+        // Objektumok sorban
         while bytes > 0 {
             match self.objects.front_mut() {
                 Some(entry) => {
                     let before = bytes;
                     bytes = entry.apply_ack(bytes);
+                    tracing::trace!(target: "bbr.hints", consumed = before - bytes, "object ack");
                     if entry.is_done() {
+                        tracing::debug!(target: "bbr.hints", "object done, removing from front");
                         self.objects.pop_front();
                     } else if before == bytes {
-                        break;
+                        break; // Nem tudtunk tovább ack-olni
                     }
                 }
                 None => break,
             }
+        }
+
+        if bytes > 0 {
+            tracing::warn!(target: "bbr.hints", leftover = bytes, "unconsumed bytes in on_bytes_acked");
         }
     }
 }

@@ -1084,13 +1084,13 @@ impl StreamsState {
         }
 
         let Some(hints) = send.object_sizes.as_mut() else {
-            // Nincs hints → mindig küldhető
             return true;
         };
 
-        // 1️⃣ Subgroup header: mindig átmegy
+        // 1️⃣ Subgroup header mindig megy
         if let Some(status) = hints.subgroup_status() {
             if status.outstanding > 0 {
+                tracing::trace!(target: "bbr.admission", ?stream_id, "subgroup header → allow");
                 return true;
             }
         }
@@ -1107,89 +1107,73 @@ impl StreamsState {
                 }
             };
 
-            // 3️⃣ Ha csak header van (payload még nincs kész) → átmegy
-            if !object_status.ready && object_status.total_len > 0 {
-                tracing::debug!(
-                    target="bbr.partial",
-                    ?stream_id,
-                    "object header ready, payload pending → allow send"
-                );
+            // 3️⃣ Header kész, payload még nincs?
+            if object_status.total_len > 0 && !object_status.ready {
+                tracing::trace!(target: "bbr.admission", ?stream_id, "object header ready, payload pending → allow");
                 hints.mark_current_object_admitted();
                 return true;
             }
 
-            // 4️⃣ Payload is kész → admission control
-            let admitted = object_status.admitted;
-            if !admitted {
-                let object_size = object_status.total_len;
-                let deadline_ms = object_status.deadline_ms.unwrap_or(3600);
-                let deadline = now + Duration::from_millis(deadline_ms);
-
-                let allow = scheduler
-                    .map(|ctx| {
-                        ctx.controller
-                            .can_admit_object(object_size, deadline, ctx.now, ctx.rtt)
-                    })
-                    .unwrap_or(true);
-
-                tracing::debug!(
-                    target="bbr.admission",
-                    ?stream_id,
-                    object_size,
-                    ?deadline,
-                    allow,
-                    "admission decision"
-                );
-
-                if allow {
-                    hints.mark_current_object_admitted();
-                    return true;
-                } else {
-                    // Drop object if possible
-                    if !send.pending.can_discard_unsent_prefix() {
-                        // Már elkezdtük küldeni → kénytelenek vagyunk engedni
-                        tracing::debug!(
-                            target="bbr.forceadmit",
-                            ?stream_id,
-                            "object partially sent → forced admission"
-                        );
-                        hints.mark_current_object_admitted();
-                        return true;
-                    }
-
-                    let dropped_len = send.pending.discard_unsent_prefix(object_size);
-                    let dropped_total = hints.discard_current_object().unwrap_or(object_size);
-
-                    if dropped_len > 0 {
-                        *unacked_data = unacked_data.saturating_sub(dropped_len);
-                    }
-
-                    events.push_back(StreamEvent::ObjectDropped {
-                        id: stream_id,
-                        bytes: dropped_total,
-                        deadline_ms: object_status.deadline_ms,
-                    });
-
-                    tracing::debug!(
-                        target="bbr.drop",
-                        ?stream_id,
-                        bytes=dropped_total,
-                        "object dropped"
-                    );
-
-                    // Ellenőrizzük van-e még adat
-                    if send.pending.unacked() == 0 && !send.fin_pending {
-                        send.stream_pending = false;
-                        return false;
-                    }
-
-                    // Következő object
-                    continue;
-                }
+            // 4️⃣ Teljes object (header + payload) kész → admission check
+            if object_status.admitted {
+                return true;
             }
 
-            // Már admitted
-            return true;
+            let object_size = object_status.total_len;
+            let deadline_ms = object_status.deadline_ms.unwrap_or(3600);
+            let deadline = now + Duration::from_millis(deadline_ms);
+
+            let allow = scheduler
+                .map(|ctx| {
+                    ctx.controller
+                        .can_admit_object(object_size, deadline, ctx.now, ctx.rtt)
+                })
+                .unwrap_or(true);
+
+            tracing::debug!(
+                target: "bbr.admission",
+                ?stream_id,
+                object_size,
+                ?deadline,
+                allow,
+                "admission decision"
+            );
+
+            if allow {
+                hints.mark_current_object_admitted();
+                return true;
+            }
+
+            // Drop object if not sent yet
+            if !send.pending.can_discard_unsent_prefix() {
+                tracing::debug!(target: "bbr.forceadmit", ?stream_id, "object partially sent → forced admission");
+                hints.mark_current_object_admitted();
+                return true;
+            }
+
+            let dropped_len = send.pending.discard_unsent_prefix(object_size);
+            let dropped_total = hints.discard_current_object().unwrap_or(object_size);
+
+            if dropped_len > 0 {
+                *unacked_data = unacked_data.saturating_sub(dropped_len);
+            }
+
+            events.push_back(StreamEvent::ObjectDropped {
+                id: stream_id,
+                bytes: dropped_total,
+                deadline_ms: object_status.deadline_ms,
+            });
+
+            tracing::debug!(target: "bbr.drop", ?stream_id, bytes=dropped_total, "object dropped");
+
+            // Van-e még adat?
+            if send.pending.unacked() == 0 && !send.fin_pending {
+                send.stream_pending = false;
+                return false;
+            }
+
+            // Következő object
+            continue;
         }
     }
 }
