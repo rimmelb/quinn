@@ -487,12 +487,7 @@ impl StreamsState {
     /// Whether any stream data is queued, regardless of control frames
     pub(crate) fn can_send_stream_data(&self) -> bool {
         // Reset streams may linger in the pending stream list, but will never produce stream frames
-        self.pending.iter().any(|stream| {
-            self.send
-                .get(&stream.id)
-                .and_then(|s| s.as_ref())
-                .is_some_and(|s| !s.is_reset())
-        })
+        !self.pending.is_empty()
     }
 
     /// Whether MAX_STREAM_DATA frames could be sent for stream `id`
@@ -650,7 +645,6 @@ impl StreamsState {
         self.deadline_blocked_last = false;
 
         while buf.len() + frame::Stream::SIZE_BOUND < max_buf_size {
-            tracing::debug!(target="bbr.deadline", reason="pörög");
             let Some(pending_entry) = self.pending.pop() else {
                 self.deadline_blocked_last = false;
                 break;
