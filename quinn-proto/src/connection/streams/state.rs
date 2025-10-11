@@ -733,6 +733,8 @@ impl StreamsState {
                 } else {
                     self.pending.reinsert_pending(id, stream_obj.priority);
                 }
+            } else {
+                stream_obj.stream_pending = false;
             }
 
             let meta = frame::StreamMeta { id, offsets, fin };
@@ -754,25 +756,25 @@ impl StreamsState {
             stream_frames.push(meta);
         }
 
-        for (id, priority, deadline) in deferred {
-    if let Some(send) = self.send.get(&id).and_then(|s| s.as_ref()) {
-        if send.is_reset() {
-            self.send.remove(&id);
-            self.pending.remove(id);
-            continue;
-        }
+        for (id, priority, deadline) in deferred.drain(..) {
+        if let Some(send) = self.send.get(&id).and_then(|s| s.as_ref()) {
+            if send.is_reset() {
+                self.send.remove(&id);
+                self.pending.remove(id);
+                continue;
+            }
 
-        // ✅ csak akkor queue-zd vissza, ha tényleg van mit küldeni
-        if send.pending.unacked() > 0 || send.fin_pending || send.stream_pending {
-            self.pending.push_pending(id, priority, deadline);
-        } else {
-            tracing::debug!(
-                target="bbr.deadline",
-                stream=?id,
-                "skip requeue: empty or stream_pending=false"
-            );
+            if send.pending.unacked() > 0 || send.fin_pending || send.stream_pending {
+                self.pending.push_pending(id, priority, deadline);
+            } 
+            else {
+                tracing::debug!(
+                    target="bbr.deadline",
+                    stream=?id,
+                    "skip requeue: empty or stream_pending=false"
+                );
+            }
         }
-    }
     }
     stream_frames
 }
@@ -1149,8 +1151,8 @@ impl StreamsState {
 
     if let Some(hints) = send.object_sizes.as_mut() {
         hints.promote_blocked_if_idle(now);
-        
-        // Ellenőrizzük a subgroup header állapotát
+
+        // subgroup header kezelése
         if let Some(status) = hints.subgroup_status() {
             if status.outstanding > 0 {
                 if !status.ready && send.pending.unacked() == 0 {
@@ -1160,29 +1162,28 @@ impl StreamsState {
             }
         }
 
-        let mut previous_dropped = false;
+        let mut had_drop = false;
 
-        // ✅ ÚJ: Loop MINDEN objektumon, amíg találunk egyet, ami READY ÉS ADMITTED
         loop {
             let Some(object_status) = hints.current_object_status() else {
-                // Nincs több objektum
+                // nincs több object → maradhat pending, ha még vannak bájtok
                 return send.pending.unacked() > 0 || send.fin_pending;
             };
 
+            // ha a következő object még nem ready
             if !object_status.ready {
-                return previous_dropped;
+                // 🔹 csak akkor engedjük tovább, ha tényleg maradt adat (pl. subgroup)
+                return send.pending.unacked() > 0 || had_drop;
             }
 
-            // ✅ KRITIKUS: Az admission ellenőrzést MINDIG végezzük el, MIELŐTT visszatérnénk true-val
             let mut admitted = object_status.admitted;
-            
+
             if !admitted && scheduler.is_some() {
                 let deadline_hint = object_status.deadline_ms;
                 let object_size = object_status.total_len;
-
                 let deadline_ms = deadline_hint.unwrap_or(3600);
                 let deadline = now + Duration::from_millis(deadline_ms);
-                
+
                 let allow = scheduler
                     .map(|ctx| {
                         ctx.controller.can_admit_object(
@@ -1193,50 +1194,38 @@ impl StreamsState {
                         )
                     })
                     .unwrap_or(true);
-                
+
                 if allow {
-                    // ✅ ADMITTED: Jelöljük meg, és RETURN TRUE
                     hints.mark_current_object_admitted();
-                    // tracing::debug!(
-                    //     target = "bbr.deadline",
-                    //     stream_id = ?stream_id,
-                    //     object_size = object_size,
-                    //     "object admitted"
-                    // );
                     return true;
                 } else {
+                    // ❌ drop objektum
                     if !send.pending.can_discard_unsent_prefix() {
                         tracing::debug!(
-                            target = "bbr.deadline",
-                            stream_id = ?stream_id,
-                            object_size = object_size,
+                            target="bbr.deadline",
+                            ?stream_id,
+                            object_size,
                             "object partially sent, forcing admission"
                         );
                         hints.mark_current_object_admitted();
                         return true;
                     }
-                    
-                    // ✅ Az objektum TELJESEN UNSENT, eldobhatjuk
+
                     let dropped_len = send.pending.discard_unsent_prefix(object_size);
                     let dropped_total = hints.discard_current_object().unwrap_or(object_size);
-                    send.stream_pending = false;
-                    
+
                     tracing::debug!(
-                        target = "bbr.deadline",
-                        stream_id = ?stream_id,
-                        object_size = dropped_total,
-                        deadline = ?deadline,
+                        target="bbr.deadline",
+                        ?stream_id,
+                        object_size=dropped_total,
+                        deadline=?deadline,
                         "admission_drop_object"
                     );
-                    
+
                     if hints.discard_blocked_objects() {
-                        tracing::debug!(
-                            target = "bbr.deadline",
-                            ?stream_id,
-                            "admission_drop_blocked_objects"
-                        );
+                        tracing::debug!(target="bbr.deadline", ?stream_id, "admission_drop_blocked_objects");
                     }
-                    
+
                     if dropped_len > 0 {
                         *unacked_data = unacked_data.saturating_sub(dropped_len);
                     }
@@ -1247,24 +1236,28 @@ impl StreamsState {
                         deadline_ms: deadline_hint,
                     });
 
-                    previous_dropped = true;
-                    // ✅ FOLYTATJUK a loop-ot: ellenőrizzük a KÖVETKEZŐ objektumot
+                    had_drop = true;
+                    // 🔹 csak akkor állítsuk inaktívra, ha nincs további ready object
+                    if send.pending.unacked() == 0 && !send.fin_pending {
+                        send.stream_pending = false;
+                    }
                     continue;
                 }
             }
 
-            // Az objektum már ADMITTED volt
+            // admitted objektum
             if admitted {
                 return true;
             }
-            
-            // ❌ Ez nem történhet meg (admitted false, de scheduler nincs)
-            return true;
+
+            // biztonsági fallback
+            return send.pending.unacked() > 0;
         }
     }
-    
+
     true
 }
+
 }
 
 #[inline]
