@@ -266,7 +266,7 @@ impl<'a> SendStream<'a> {
         }
 
         let mut was_pending = stream.stream_pending;
-        if self.id.index() == 0 || self.id.index() == 2 || self.id.index() == 10 {
+        if self.id.index() == 0 || self.id.index() == 2 || self.id.index() == 4 {
             was_pending = false;
         }
         let written = stream.write(source, limit)?;
@@ -289,7 +289,7 @@ impl<'a> SendStream<'a> {
             stream.stream_pending = true;
         }
 
-        if stream.pending.unacked() == 0 && !stream.fin_pending {
+        if written.bytes > 0 && stream.pending.unacked() == 0 && !stream.fin_pending {
         stream.stream_pending = false;
         }
 
