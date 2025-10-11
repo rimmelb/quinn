@@ -141,9 +141,10 @@ pub(super) struct ObjectStatus {
 
 #[derive(Debug)]
 pub(super) struct StreamHints {
+    /// Subgroup header (opcionális)
     subgroup: Option<ChunkProgress>,
-    pub objects: VecDeque<ObjectEntry>,
-    blocked: VecDeque<ObjectEntry>,
+    /// Object lista: header + payload
+    objects: VecDeque<ObjectEntry>,
 }
 
 impl StreamHints {
@@ -151,7 +152,6 @@ impl StreamHints {
         Self {
             subgroup: None,
             objects: VecDeque::new(),
-            blocked: VecDeque::new(),
         }
     }
 
@@ -176,6 +176,40 @@ impl StreamHints {
         self.objects.push_back(entry);
     }
 
+    /// Subgroup header kész?
+    pub(super) fn subgroup_status(&self) -> Option<ChunkStatus> {
+        self.subgroup.as_ref().map(|chunk| ChunkStatus {
+            ready: chunk.is_ready(),
+            outstanding: chunk.outstanding(),
+        })
+    }
+
+    /// Első object státusza
+    pub(super) fn current_object_status(&self) -> Option<ObjectStatus> {
+        let entry = self.objects.front()?;
+        Some(ObjectStatus {
+            ready: entry.is_ready(),
+            outstanding: entry.outstanding(),
+            available: entry.available(),
+            total_len: entry.total_len(),
+            deadline_ms: entry.deadline_ms,
+            admitted: entry.admitted,
+        })
+    }
+
+    /// Mark current object as admitted
+    pub(super) fn mark_current_object_admitted(&mut self) {
+        if let Some(entry) = self.objects.front_mut() {
+            entry.admitted = true;
+        }
+    }
+
+    /// Discard current object
+    pub(super) fn discard_current_object(&mut self) -> Option<u64> {
+        self.objects.pop_front().map(|entry| entry.total_len())
+    }
+
+    /// Van-e részleges object (header kész, payload nem)
     pub fn has_partial_object(&self) -> bool {
         self.current_object_status()
             .map(|s| s.total_len > 0 && !s.ready)
@@ -221,78 +255,6 @@ impl StreamHints {
                 None => break,
             }
         }
-        while matches!(self.objects.front(), Some(entry) if entry.is_done()) {
-            self.objects.pop_front();
-        }
-    }
-
-    pub(super) fn subgroup_status(&self) -> Option<ChunkStatus> {
-        self.subgroup.as_ref().map(|chunk| ChunkStatus {
-            ready: chunk.is_ready(),
-            outstanding: chunk.outstanding(),
-        })
-    }
-
-    pub(super) fn current_object_status(&self) -> Option<ObjectStatus> {
-        let entry = self.objects.front()?;
-        Some(ObjectStatus {
-            ready: entry.is_ready(),
-            outstanding: entry.outstanding(),
-            available: entry.available(),
-            total_len: entry.total_len(),
-            deadline_ms: entry.deadline_ms,
-            admitted: entry.admitted,
-        })
-    }
-
-    pub(super) fn mark_current_object_admitted(&mut self) {
-        if let Some(entry) = self.objects.front_mut() {
-            entry.admitted = true;
-        }
-    }
-
-    pub(super) fn discard_current_object(&mut self) -> Option<u64> {
-        self.objects.pop_front().map(|entry| entry.total_len())
-    }
-
-    pub(super) fn discard_blocked_objects(&mut self) -> bool {
-        let dropped = !self.blocked.is_empty();
-        if dropped {
-            self.blocked.clear();
-        }
-        dropped
-    }
-
-    pub(super) fn next_retry_at(&self) -> Option<Instant> {
-        self.blocked.front().and_then(|entry| entry.retry_at)
-    }
-
-    pub(super) fn promote_blocked_if_idle(&mut self, now: Instant) {
-        while self.objects.is_empty() {
-            match self.blocked.front() {
-                Some(entry) if entry.retry_at.map(|t| t <= now).unwrap_or(true) => {
-                    let mut entry = self.blocked.pop_front().expect("front exists");
-                    entry.retry_at = None;
-                    self.objects.push_back(entry);
-                }
-                _ => break,
-            }
-        }
-    }
-
-    pub(super) fn peek_object_status(&self, now: Instant) -> Option<ObjectStatus> {
-        let entry = self.objects.front()?;
-        if entry.retry_at.map(|t| t > now).unwrap_or(false) {
-            return None;
-        }
-        Some(ObjectStatus {
-            ready: entry.is_ready(),
-            outstanding: entry.outstanding(),
-            available: entry.available(),
-            total_len: entry.total_len(),
-            deadline_ms: entry.deadline_ms,
-            admitted: entry.admitted,
-        })
     }
 }
 
@@ -785,29 +747,5 @@ mod tests {
                 assert_eq!(chunks_consumed, 0);
             }
         }
-    }
-
-    #[test]
-    fn object_ready_with_partial_payload() {
-        let mut hints = StreamHints::new();
-        let now = Instant::now();
-
-        hints.append_object_header_size(4);
-        hints.append_object_size(10, None);
-
-        assert_eq!(hints.peek_object_status(now).map(|s| s.ready), Some(false));
-
-        hints.on_bytes_written(4);
-        assert_eq!(hints.peek_object_status(now).map(|s| s.ready), Some(false));
-
-        hints.on_bytes_written(3);
-        let status = hints.peek_object_status(now).expect("object status");
-        assert!(status.ready);
-        assert_eq!(status.available, 7);
-
-        hints.on_bytes_acked(7);
-        let status = hints.peek_object_status(now).expect("object status");
-        assert!(!status.ready);
-        assert_eq!(status.available, 0);
     }
 }
