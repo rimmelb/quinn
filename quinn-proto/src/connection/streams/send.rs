@@ -176,6 +176,12 @@ impl StreamHints {
         self.objects.push_back(entry);
     }
 
+    pub fn has_partial_object(&self) -> bool {
+        self.current_object_status()
+            .map(|s| s.total_len > 0 && !s.ready)
+            .unwrap_or(false)
+    }
+
     pub(super) fn on_bytes_written(&mut self, mut bytes: u64) {
         if bytes == 0 {
             return;

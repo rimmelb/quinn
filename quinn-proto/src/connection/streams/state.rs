@@ -723,16 +723,16 @@ impl StreamsState {
         }
 
         // 3️⃣ — Requeue: minden aktív (vagy unacked) stream vissza kell kerüljön
-        if stream_obj.is_pending() || stream_obj.pending.unacked() > 0 {
-            if fair {
-                self.pending.push_pending(id, stream_obj.priority, stream_obj.deadline);
-            } else {
-                self.pending.reinsert_pending(id, stream_obj.priority);
-            }
+        if stream_obj.is_pending()
+    || stream_obj.pending.unacked() > 0
+    || stream_obj.object_sizes.as_ref().map(|h| h.has_partial_object()).unwrap_or(false)
+        {
+            self.pending.push_pending(id, stream_obj.priority, stream_obj.deadline);
         } else {
             tracing::debug!(target="bbr.pending", ?id, "stream completed → no requeue");
             stream_obj.stream_pending = false;
         }
+
 
         // 4️⃣ — STREAM frame encode
         let meta = frame::StreamMeta { id, offsets, fin };
