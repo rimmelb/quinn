@@ -3416,6 +3416,8 @@ impl Connection {
         }
 
         if space_id == SpaceId::Data {
+            if !self.streams.can_send_stream_data() {
+
             let scheduler_ctx = StreamsDeadlineContext {
                 now,
                 rtt: self.path.rtt.get(),
@@ -3429,6 +3431,7 @@ impl Connection {
             );
 
             self.stats.frame_tx.stream += sent.stream_frames.len() as u64;
+        }
         }
         sent
     }

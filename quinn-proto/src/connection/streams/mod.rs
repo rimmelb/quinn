@@ -265,15 +265,16 @@ impl<'a> SendStream<'a> {
             return Err(WriteError::Blocked);
         }
 
-        let was_pending = stream.is_pending();
+        let was_pending = stream.pending.has_unsent_data() || stream.fin_pending;
         let written = stream.write(source, limit)?;
+        if written.bytes > 0 {
+            let is_pending_now = stream.pending.has_unsent_data() || stream.fin_pending;
+            if !was_pending && is_pending_now {
+                self.state.pending.push_pending(self.id, stream.priority, stream.deadline);
+            }
+        }
         self.state.data_sent += written.bytes as u64;
         self.state.unacked_data += written.bytes as u64;
-        if !was_pending && stream.is_pending() {
-            self.state
-                .pending
-                .push_pending(self.id, stream.priority, stream.deadline);
-        }
         Ok(written)
     }
 
