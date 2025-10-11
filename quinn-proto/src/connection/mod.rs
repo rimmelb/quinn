@@ -3416,7 +3416,7 @@ impl Connection {
             self.stats.frame_tx.new_token += 1;
         }
 
-        if space_id == SpaceId::Data {
+        if space_id == SpaceId::Data && !self.streams.can_send_stream_data() {
             let scheduler_ctx = StreamsDeadlineContext {
                 now,
                 rtt: self.path.rtt.get(),

@@ -636,7 +636,6 @@ impl Controller for Bbr {
         tracing::info!(target: "bbr.deadline", enabled, "BBR deadline scheduler enabled flag updated");
     }
 
-    // ...existing code...
     fn can_admit_object(
         &self,
         object_size: u64,
