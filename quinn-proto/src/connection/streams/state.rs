@@ -1148,6 +1148,11 @@ impl StreamsState {
     if pending_bytes == 0 && !send.fin_pending {
         return false;
     }
+        if stream_id.index() <= 4 {
+        return true;
+        }
+
+
 
     if let Some(hints) = send.object_sizes.as_mut() {
         hints.promote_blocked_if_idle(now);
