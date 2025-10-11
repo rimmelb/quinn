@@ -628,6 +628,35 @@ impl StreamsState {
         }
     }
 
+    /// Heurisztika: küldhető-e most, vagy nagyon közel van-e (legalább ~1 MSS elérhető)?
+    #[inline]
+    fn has_sendable_or_near_ready(send: &Send, now: Instant) -> bool {
+        if send.pending.unacked() > 0 || send.fin_pending {
+            return true;
+        }
+        if let Some(hints) = send.object_sizes.as_ref() {
+            // subgroup
+            if let Some(sub) = hints.subgroup_status() {
+                if sub.ready && sub.outstanding > 0 {
+                    return true;
+                }
+            }
+            // object
+            if let Some(obj) = hints.peek_object_status(now) {
+                if obj.ready {
+                    return true;
+                }
+                // Near-ready: header kész és van legalább ~1 MSS-nyi elérhető payload
+                // (csökkentsd/növeld a küszöböt, ha túl agresszív/óvatos)
+                const MIN_CHUNK_TO_QUEUE: u64 = 1200;
+                if obj.available >= MIN_CHUNK_TO_QUEUE {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub(crate) fn write_stream_frames(
         &mut self,
         buf: &mut Vec<u8>,
@@ -683,26 +712,9 @@ impl StreamsState {
                 &mut self.unacked_data,
                 &mut self.events,
             ) {
-                // NEW: detect “ready” object even if not yet admitted
-                let mut has_ready_object = false;
-                let mut has_ready_subgroup = false;
-                if let Some(hints) = stream_obj.object_sizes.as_ref() {
-                    if let Some(obj) = hints.peek_object_status(scheduler_now) {
-                        // fontos: ready elég a requeue-hoz, az admission itt még lehet false
-                        has_ready_object = obj.ready;
-                    }
-                    if let Some(sub) = hints.subgroup_status() {
-                        has_ready_subgroup = sub.ready && sub.outstanding > 0;
-                    }
-                }
-
-                // Re-queue if: van ténylegesen küldhető dolog, vagy a következő objektum már ready
-                // ... !stream_ready_for_transmit(...) { ... }
-                if stream_obj.pending.unacked() > 0
-                    || stream_obj.fin_pending
-                    || has_ready_object
-                    || has_ready_subgroup
-                {
+                // object_not_ready eset: csak akkor requeue, ha tényleg közel vagyunk a küldhetőséghez
+                let sendable = Self::has_sendable_or_near_ready(stream_obj, scheduler_now);
+                if sendable {
                     if deadline_ctx.is_some() {
                         blocked_by_admission = true;
                     }
@@ -711,12 +723,11 @@ impl StreamsState {
                     tracing::debug!(
                         target="bbr.deadline",
                         stream = %id,
-                        "stream temporarily idle (no pending or ready), skipping requeue"
+                        "stream temporarily idle (no pending or near-ready), skipping requeue"
                     );
                     stream_obj.stream_pending = false;
                 }
                 continue;
-
             }
 
             let max_buf_size = max_buf_size - buf.len() - 1 - VarInt::size(id.into());
@@ -759,30 +770,28 @@ impl StreamsState {
 
         for (id, priority, deadline) in deferred.drain(..) {
             if let Some(send) = self.send.get(&id).and_then(|s| s.as_ref()) {
-        if send.is_reset() {
-            self.send.remove(&id);
-            self.pending.remove(id);
-            continue;
-        }
-
-        if send.pending.unacked() > 0 || send.fin_pending || send.stream_pending {
-            self.pending.push_pending(id, priority, deadline);
-        } else {
-            tracing::debug!(
-                target="bbr.deadline",
-                stream=?id,
-                "skip requeue: empty or stream_pending=false"
-            );
-            // 🔴 Itt is gondoskodj róla, hogy tényleg false legyen:
-            if let Some(send_mut) = self.send.get_mut(&id).and_then(|s| s.as_mut()) {
-                send_mut.stream_pending = false;
-                        }
+                if send.is_reset() {
+                    self.send.remove(&id);
+                    self.pending.remove(id);
+                    continue;
+                }
+                if Self::has_sendable_or_near_ready(send, scheduler_now) {
+                    self.pending.push_pending(id, priority, deadline);
+                } else {
+                    tracing::debug!(
+                        target="bbr.deadline",
+                        stream=?id,
+                        "skip requeue: empty and not near-ready"
+                    );
+                    if let Some(send_mut) = self.send.get_mut(&id).and_then(|s| s.as_mut()) {
+                        send_mut.stream_pending = false;
                     }
                 }
             }
+        }
 
-    stream_frames
-}
+        stream_frames
+    }
 
     pub(crate) fn admission_blocked(&self) -> bool {
         self.deadline_blocked_last
