@@ -266,7 +266,7 @@ impl<'a> SendStream<'a> {
         }
 
         let mut was_pending = stream.stream_pending;
-        if self.id < StreamId::from(VarInt::from(50u32)) {
+        if self.id.index() == 0 || self.id.index() == 2 || self.id.index() == 10 {
             was_pending = false;
         }
         let written = stream.write(source, limit)?;
@@ -288,6 +288,11 @@ impl<'a> SendStream<'a> {
                 .push_pending(self.id, stream.priority, stream.deadline);
             stream.stream_pending = true;
         }
+
+        if stream.pending.unacked() == 0 && !stream.fin_pending {
+        stream.stream_pending = false;
+        }
+
         Ok(written)
     }
 

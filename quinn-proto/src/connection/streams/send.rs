@@ -447,7 +447,7 @@ impl Send {
     }
 
     pub(super) fn is_pending(&self) -> bool {
-        self.pending.has_unsent_data() || self.fin_pending
+        self.pending.unacked() == 0 || !self.fin_pending
     }
 
     pub(super) fn is_writable(&self) -> bool {
