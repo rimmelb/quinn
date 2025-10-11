@@ -755,17 +755,25 @@ impl StreamsState {
         }
 
         for (id, priority, deadline) in deferred {
-            if let Some(send) = self.send.get(&id).and_then(|s| s.as_ref()) {
-                if send.is_reset() {
-                    self.send.remove(&id);
-                    self.pending.remove(id);
-                    continue;
-                }
-                self.pending.push_pending(id, priority, deadline);
-                
-            }
+    if let Some(send) = self.send.get(&id).and_then(|s| s.as_ref()) {
+        if send.is_reset() {
+            self.send.remove(&id);
+            self.pending.remove(id);
+            continue;
         }
 
+        // ✅ csak akkor queue-zd vissza, ha tényleg van mit küldeni
+        if send.pending.unacked() > 0 || send.fin_pending || send.stream_pending {
+            self.pending.push_pending(id, priority, deadline);
+        } else {
+            tracing::debug!(
+                target="bbr.deadline",
+                stream=?id,
+                "skip requeue: empty or stream_pending=false"
+            );
+        }
+    }
+    }
     stream_frames
 }
 
