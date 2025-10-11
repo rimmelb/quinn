@@ -1160,25 +1160,12 @@ fn stream_ready_for_transmit(
             return false;
         }
 
-        // // 🔹 Az első néhány stream (SETTINGS / CONNECT / CONTROL) mindig mehessen
-        // if stream_id.index() <= 6 {
-        //     tracing::debug!(
-        //         target = "bbr.deadline",
-        //         ?stream_id,
-        //         "control stream → auto-admitted"
-        //     );
-        //     return true;
-        // }
-
-        // 🔹 Ha nincs Hints (objektumlista), a stream szabadon küldhet
         let Some(hints) = send.object_sizes.as_mut() else {
             return true;
         };
 
-        // Subgroup promotion (pl. ha semmi nem történt egy ideig)
         hints.promote_blocked_if_idle(now);
 
-        // 🔹 Ha subgroup aktív, engedjük
         if let Some(status) = hints.subgroup_status() {
             if status.outstanding > 0 {
                 if !status.ready && send.pending.unacked() == 0 {
@@ -1203,16 +1190,14 @@ fn stream_ready_for_transmit(
                 }
             };
 
-            // 🔹 Ha a következő objektum még nem READY
-            if !object_status.ready {
+            if !object_status.ready && object_status.total_len > 0 {
                 tracing::debug!(
-                    target = "bbr.ready",
+                    target="bbr.partial",
                     ?stream_id,
                     ?object_status,
-                    "object not ready → waiting"
+                    "object header known but payload not ready → keep stream active"
                 );
-                // csak akkor tartsuk bent, ha van adat vagy előző drop
-                return (send.pending.unacked() > 0) || had_drop;
+                return true; // ne blokkoljuk a streamet
             }
 
             let admitted = object_status.admitted;
