@@ -778,11 +778,6 @@ impl StreamsState {
                 if Self::has_sendable_or_near_ready(send, scheduler_now) {
                     self.pending.push_pending(id, priority, deadline);
                 } else {
-                    tracing::debug!(
-                        target="bbr.deadline",
-                        stream=?id,
-                        "skip requeue: empty and not near-ready"
-                    );
                     if let Some(send_mut) = self.send.get_mut(&id).and_then(|s| s.as_mut()) {
                         send_mut.stream_pending = false;
                     }
@@ -1161,11 +1156,6 @@ fn stream_ready_for_transmit(
         // 🔹 Nincs semmi küldhető, se FIN → nincs teendő
         let pending_bytes = send.pending.unacked();
         if pending_bytes == 0 && !send.fin_pending {
-            tracing::debug!(
-                target = "bbr.deadline",
-                ?stream_id,
-                "stream not ready: no pending data or FIN"
-            );
             send.stream_pending = false;
             return false;
         }
@@ -1182,11 +1172,6 @@ fn stream_ready_for_transmit(
 
         // 🔹 Ha nincs Hints (objektumlista), a stream szabadon küldhet
         let Some(hints) = send.object_sizes.as_mut() else {
-            tracing::debug!(
-                target = "bbr.deadline",
-                ?stream_id,
-                "no object hints, sending allowed"
-            );
             return true;
         };
 
@@ -1196,18 +1181,7 @@ fn stream_ready_for_transmit(
         // 🔹 Ha subgroup aktív, engedjük
         if let Some(status) = hints.subgroup_status() {
             if status.outstanding > 0 {
-                tracing::debug!(
-                    target = "bbr.deadline",
-                    ?stream_id,
-                    ?status,
-                    "active subgroup present → transmit ok"
-                );
                 if !status.ready && send.pending.unacked() == 0 {
-                    tracing::debug!(
-                        target = "bbr.deadline",
-                        ?stream_id,
-                        "subgroup not ready and no pending bytes → idle"
-                    );
                     send.stream_pending = false;
                     return false;
                 }
@@ -1222,20 +1196,8 @@ fn stream_ready_for_transmit(
             let Some(object_status) = hints.current_object_status() else {
                 // nincs több objektum → akkor is mehessen, ha van maradék byte
                 if send.pending.unacked() > 0 || send.fin_pending {
-                    tracing::debug!(
-                        target = "bbr.deadline",
-                        ?stream_id,
-                        unacked = send.pending.unacked(),
-                        fin = send.fin_pending,
-                        "no more objects but leftover data → keep sending"
-                    );
                     return true;
                 } else {
-                    tracing::debug!(
-                        target = "bbr.deadline",
-                        ?stream_id,
-                        "no objects and no pending data → idle"
-                    );
                     send.stream_pending = false;
                     return false;
                 }
@@ -1368,11 +1330,6 @@ fn stream_ready_for_transmit(
 
             // 🔹 Már admitted objektum → simán engedjük
             if admitted {
-                tracing::debug!(
-                    target = "bbr.deadline",
-                    ?stream_id,
-                    "object already admitted → transmit ok"
-                );
                 return true;
             }
 

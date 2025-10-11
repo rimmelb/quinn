@@ -382,7 +382,6 @@ impl Send {
             self.pending.write(chunk);
             if let Some(hints) = &mut self.object_sizes {
                 hints.on_bytes_written(chunk_len);
-                tracing::debug!(target = "bbr.deadline", chunk_len);
             }
         }
 

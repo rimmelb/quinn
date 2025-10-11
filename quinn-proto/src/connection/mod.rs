@@ -887,12 +887,6 @@ impl Connection {
                 self.populate_packet(now, space_id, buf, builder.max_size, builder.exact_number);
 
             if sent.is_ack_only(&self.streams) {
-                tracing::debug!(
-                    target = "bbr.deadline",
-                    "after populate: ack_only={}, buf_len={}",
-                    sent.is_ack_only(&self.streams),
-                    buf.len()
-                );
                 can_send.other = false;
             }
 
