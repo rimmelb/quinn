@@ -1161,15 +1161,15 @@ fn stream_ready_for_transmit(
             return false;
         }
 
-        // 🔹 Az első néhány stream (SETTINGS / CONNECT / CONTROL) mindig mehessen
-        if stream_id.index() <= 6 {
-            tracing::debug!(
-                target = "bbr.deadline",
-                ?stream_id,
-                "control stream → auto-admitted"
-            );
-            return true;
-        }
+        // // 🔹 Az első néhány stream (SETTINGS / CONNECT / CONTROL) mindig mehessen
+        // if stream_id.index() <= 6 {
+        //     tracing::debug!(
+        //         target = "bbr.deadline",
+        //         ?stream_id,
+        //         "control stream → auto-admitted"
+        //     );
+        //     return true;
+        // }
 
         // 🔹 Ha nincs Hints (objektumlista), a stream szabadon küldhet
         let Some(hints) = send.object_sizes.as_mut() else {
