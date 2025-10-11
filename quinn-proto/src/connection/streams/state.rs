@@ -636,20 +636,21 @@ impl StreamsState {
                 continue;
             }
 
-            // Ellenőrizzük hogy küldhető-e
-            if !Self::stream_ready_for_transmit(
-                id,
-                stream_obj,
-                deadline_ctx.as_ref(),
-                scheduler_now,
-                &mut self.unacked_data,
-                &mut self.events,
-            ) {
-                // Nem küldhető, de ha van pending adat → defer
-                if stream_obj.pending.unacked() > 0 || stream_obj.fin_pending {
-                    deferred.push((id, stream_obj.priority, stream_obj.deadline));
+            // **Admission control** (csak ha van hints)
+            if stream_obj.object_sizes.is_some() {
+                if !Self::stream_ready_for_transmit(
+                    id,
+                    stream_obj,
+                    deadline_ctx.as_ref(),
+                    scheduler_now,
+                    &mut self.unacked_data,
+                    &mut self.events,
+                ) {
+                    if stream_obj.pending.unacked() > 0 || stream_obj.fin_pending {
+                        deferred.push((id, stream_obj.priority, stream_obj.deadline));
+                    }
+                    continue;
                 }
-                continue;
             }
 
             // Készítsük elő az adatokat
@@ -657,7 +658,6 @@ impl StreamsState {
             let (offsets, encode_length) = stream_obj.pending.poll_transmit(max_buf_size);
 
             if offsets.start == offsets.end {
-                // Nincs mit küldeni
                 deferred.push((id, stream_obj.priority, stream_obj.deadline));
                 continue;
             }
@@ -709,6 +709,7 @@ impl StreamsState {
 
         stream_frames
     }
+
 
 
 
