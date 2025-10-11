@@ -1148,7 +1148,7 @@ impl StreamsState {
     if pending_bytes == 0 && !send.fin_pending {
         return false;
     }
-        if stream_id.index() <= 4 {
+        if stream_id.index() <= 6 {
         return true;
         }
 
