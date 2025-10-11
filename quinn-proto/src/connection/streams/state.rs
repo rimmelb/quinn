@@ -764,6 +764,12 @@ impl StreamsState {
                 continue;
             }
 
+            // ✅ control streamek mindig visszakerülnek
+            if id.index() <= 6 {
+                self.pending.push_pending(id, priority, deadline);
+                continue;
+            }
+
             if send.pending.unacked() > 0 || send.fin_pending || send.stream_pending {
                 self.pending.push_pending(id, priority, deadline);
             } 
