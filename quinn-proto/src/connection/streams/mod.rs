@@ -266,7 +266,7 @@ impl<'a> SendStream<'a> {
         }
 
         let mut was_pending = stream.stream_pending;
-        if self.id < StreamId::from(VarInt::from(4u32)) {
+        if self.id < StreamId::from(VarInt::from(50u32)) {
             was_pending = false;
         }
         let written = stream.write(source, limit)?;
