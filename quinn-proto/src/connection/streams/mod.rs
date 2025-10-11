@@ -237,63 +237,81 @@ impl<'a> SendStream<'a> {
     }
 
     fn write_source<B: BytesSource>(&mut self, source: &mut B) -> Result<Written, WriteError> {
-    if self.conn_state.is_closed() {
-        trace!(%self.id, "write blocked; connection draining");
-        return Err(WriteError::Blocked);
-    }
-
-    let limit = self.state.write_limit();
-    let max_send_data = self.state.max_send_data(self.id);
-
-    let stream = self
-        .state
-        .send
-        .get_mut(&self.id)
-        .map(get_or_insert_send(max_send_data))
-        .ok_or(WriteError::ClosedStream)?;
-
-    if limit == 0 {
-        trace!(
-            stream=%self.id,
-            max_data=self.state.max_data,
-            data_sent=self.state.data_sent,
-            "write blocked by connection-level flow control or send window"
-        );
-        if !stream.connection_blocked {
-            stream.connection_blocked = true;
-            self.state.connection_blocked.push(self.id);
+        if self.conn_state.is_closed() {
+            trace!(%self.id, "write blocked; connection draining");
+            return Err(WriteError::Blocked);
         }
-        return Err(WriteError::Blocked);
+
+        let limit = self.state.write_limit();
+        let max_send_data = self.state.max_send_data(self.id);
+
+        let stream = self
+            .state
+            .send
+            .get_mut(&self.id)
+            .map(get_or_insert_send(max_send_data))
+            .ok_or(WriteError::ClosedStream)?;
+
+        if limit == 0 {
+            trace!(
+                stream=%self.id,
+                max_data=self.state.max_data,
+                data_sent=self.state.data_sent,
+                "write blocked by connection-level flow control or send window"
+            );
+            if !stream.connection_blocked {
+                stream.connection_blocked = true;
+                self.state.connection_blocked.push(self.id);
+            }
+            return Err(WriteError::Blocked);
+        }
+
+        let was_pending = stream.stream_pending;
+
+        let written = stream.write(source, limit)?;
+        self.state.data_sent = self.state.data_sent.saturating_add(written.bytes as u64);
+        self.state.unacked_data = self.state.unacked_data.saturating_add(written.bytes as u64);
+
+        // Heurisztika: csak akkor queue-oljuk, ha tényleg van esély stream frame-re
+        let mut should_queue = false;
+        if written.bytes > 0 {
+            if let Some(hints) = stream.object_sizes.as_ref() {
+                let now = Instant::now();
+                // subgroup küldhető?
+                if let Some(sub) = hints.subgroup_status() {
+                    if sub.ready && sub.outstanding > 0 {
+                        should_queue = true;
+                    }
+                }
+                // object küldhető vagy near-ready?
+                if !should_queue {
+                    if let Some(obj) = hints.peek_object_status(now) {
+                        // ready → queue; near-ready → ha van legalább ~1 MSS elérhető
+                        const MIN_CHUNK_TO_QUEUE: u64 = 1200;
+                        if obj.ready || obj.available >= MIN_CHUNK_TO_QUEUE {
+                            should_queue = true;
+                        }
+                    }
+                }
+            } else {
+                // Nincs hints: klasszikus viselkedés
+                should_queue = stream.pending.unacked() > 0 || stream.fin_pending;
+            }
+        }
+
+        if !was_pending && should_queue {
+            tracing::debug!(target="bbr.deadline", sid=?self.id, "PENDING_PUSH");
+            self.state
+                .pending
+                .push_pending(self.id, stream.priority, stream.deadline);
+            stream.stream_pending = true;
+        } else if !should_queue {
+            // Not-ready és kicsi a rendelkezésre álló payload → szándékosan nem queue-oljuk
+            tracing::debug!(target="bbr.deadline", sid=?self.id, "PENDING_SKIP_not_ready");
+        }
+
+        Ok(written)
     }
-
-    let was_pending = stream.stream_pending;
-    let written = stream.write(source, limit)?;
-    self.state.data_sent += written.bytes as u64;
-    self.state.unacked_data += written.bytes as u64;
-
-    tracing::debug!(
-        target="bbr.deadline",
-        stream_id=?self.id,
-        was_pending,
-        unacked=stream.pending.unacked(),
-        fin=stream.fin_pending,
-        "WRITE_SOURCE_ENTER"
-    );
-
-    // ➕ Csak akkor push, ha valóban írtunk adatot és eddig nem volt bent
-    if written.bytes > 0 && !was_pending {
-    self.state.pending.push_pending(self.id, stream.priority, stream.deadline);
-    stream.stream_pending = true;
-    tracing::debug!(target="bbr.deadline", sid=?self.id, "PENDING_PUSH");
-    }
-    // ha kiürült:
-    if written.bytes > 0 && stream.pending.unacked() == 0 && !stream.fin_pending {
-        stream.stream_pending = false;
-        tracing::debug!(target="bbr.deadline", sid=?self.id, "STREAM_IDLE_AFTER_WRITE");
-    }
-
-    Ok(written)
-}
 
 
     /// Check if this stream was stopped, get the reason if it was
