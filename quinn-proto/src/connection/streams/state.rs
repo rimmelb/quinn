@@ -1206,7 +1206,7 @@ fn stream_ready_for_transmit(
             // 🔹 Ha a következő objektum még nem READY
             if !object_status.ready {
                 tracing::debug!(
-                    target = "bbr.deadline",
+                    target = "bbr.ready",
                     ?stream_id,
                     ?object_status,
                     "object not ready → waiting"
@@ -1217,7 +1217,7 @@ fn stream_ready_for_transmit(
 
             let admitted = object_status.admitted;
             tracing::debug!(
-                target = "bbr.deadline",
+                target = "bbr.checking",
                 ?stream_id,
                 admitted,
                 "checking admission for ready object"
@@ -1242,7 +1242,7 @@ fn stream_ready_for_transmit(
                     .unwrap_or(true);
 
                 tracing::debug!(
-                    target = "bbr.deadline",
+                    target = "bbr.admissiondecision",
                     ?stream_id,
                     object_size,
                     ?deadline,
@@ -1254,7 +1254,7 @@ fn stream_ready_for_transmit(
                     // ✅ Admitted: jelöld és engedd tovább
                     hints.mark_current_object_admitted();
                     tracing::debug!(
-                        target = "bbr.deadline",
+                        target = "bbr.admitted",
                         ?stream_id,
                         object_size,
                         "object admitted for transmit"
@@ -1265,7 +1265,7 @@ fn stream_ready_for_transmit(
                     if !send.pending.can_discard_unsent_prefix() {
                         // Már részben elküldött → kényszerítsd admitted státuszba
                         tracing::debug!(
-                            target = "bbr.deadline",
+                            target = "bbr.forceadmit",
                             ?stream_id,
                             object_size,
                             "object partially sent → forced admission"
@@ -1279,7 +1279,7 @@ fn stream_ready_for_transmit(
                     let dropped_total = hints.discard_current_object().unwrap_or(object_size);
 
                     tracing::debug!(
-                        target = "bbr.deadline",
+                        target = "bbr.drop",
                         ?stream_id,
                         object_size = dropped_total,
                         deadline = ?deadline,
@@ -1288,7 +1288,7 @@ fn stream_ready_for_transmit(
 
                     if hints.discard_blocked_objects() {
                         tracing::debug!(
-                            target = "bbr.deadline",
+                            target = "bbr.drop",
                             ?stream_id,
                             "admission_drop_blocked_objects"
                         );
@@ -1309,20 +1309,13 @@ fn stream_ready_for_transmit(
                     // ❌ Ha nincs több adat, állítsuk le
                     if send.pending.unacked() == 0 && !send.fin_pending {
                         tracing::debug!(
-                            target = "bbr.deadline",
+                            target = "bbr.streamidle",
                             ?stream_id,
                             "no remaining data after drop → stream idle"
                         );
                         send.stream_pending = false;
                         return false;
                     }
-
-                    tracing::debug!(
-                        target = "bbr.deadline",
-                        ?stream_id,
-                        "object dropped, checking next one"
-                    );
-
                     // Ellenőrizzük a következő objektumot
                     continue;
                 }
@@ -1335,7 +1328,7 @@ fn stream_ready_for_transmit(
 
             // 🔹 Biztonsági fallback
             tracing::debug!(
-                target = "bbr.deadline",
+                target = "bbr.fallback",
                 ?stream_id,
                 unacked = send.pending.unacked(),
                 "safety fallback: send allowed if pending>0"
