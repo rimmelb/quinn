@@ -697,6 +697,7 @@ impl StreamsState {
                 }
 
                 // Re-queue if: van ténylegesen küldhető dolog, vagy a következő objektum már ready
+                // ... !stream_ready_for_transmit(...) { ... }
                 if stream_obj.pending.unacked() > 0
                     || stream_obj.fin_pending
                     || has_ready_object
@@ -705,20 +706,18 @@ impl StreamsState {
                     if deadline_ctx.is_some() {
                         blocked_by_admission = true;
                     }
-                deferred.push((id, stream_obj.priority, stream_obj.deadline));
-                } 
-                else {
-                    if id.index() <= 6 {
-                    self.pending.push_pending(id, stream_obj.priority, stream_obj.deadline);
-                    continue;
-                    }
-                tracing::debug!(
+                    deferred.push((id, stream_obj.priority, stream_obj.deadline));
+                } else {
+                    tracing::debug!(
                         target="bbr.deadline",
                         stream = %id,
                         "stream temporarily idle (no pending or ready), skipping requeue"
-                );                
-            }
+                    );
+                    // 🔴 EZ HIÁNYZOTT: jelenleg NINCS a queue-ban
+                    stream_obj.stream_pending = false;
+                }
                 continue;
+
             }
 
             let max_buf_size = max_buf_size - buf.len() - 1 - VarInt::size(id.into());
@@ -760,31 +759,29 @@ impl StreamsState {
         }
 
         for (id, priority, deadline) in deferred.drain(..) {
-        if let Some(send) = self.send.get(&id).and_then(|s| s.as_ref()) {
-            if send.is_reset() {
-                self.send.remove(&id);
-                self.pending.remove(id);
-                continue;
-            }
-
-            // ✅ control streamek mindig visszakerülnek
-            if id.index() <= 6 {
-                self.pending.push_pending(id, priority, deadline);
-                continue;
-            }
-
-            if send.pending.unacked() > 0 || send.fin_pending || send.stream_pending {
-                self.pending.push_pending(id, priority, deadline);
-            } 
-            else {
-                tracing::debug!(
-                    target="bbr.deadline",
-                    stream=?id,
-                    "skip requeue: empty or stream_pending=false"
-                );
-            }
+            if let Some(send) = self.send.get(&id).and_then(|s| s.as_ref()) {
+        if send.is_reset() {
+            self.send.remove(&id);
+            self.pending.remove(id);
+            continue;
         }
-    }
+
+        if send.pending.unacked() > 0 || send.fin_pending || send.stream_pending {
+            self.pending.push_pending(id, priority, deadline);
+        } else {
+            tracing::debug!(
+                target="bbr.deadline",
+                stream=?id,
+                "skip requeue: empty or stream_pending=false"
+            );
+            // 🔴 Itt is gondoskodj róla, hogy tényleg false legyen:
+            if let Some(send_mut) = self.send.get_mut(&id).and_then(|s| s.as_mut()) {
+                send_mut.stream_pending = false;
+                        }
+                    }
+                }
+            }
+
     stream_frames
 }
 
@@ -1187,7 +1184,7 @@ impl StreamsState {
             // ha a következő object még nem ready
             if !object_status.ready {
                 // 🔹 csak akkor engedjük tovább, ha tényleg maradt adat (pl. subgroup)
-                return send.pending.unacked() > 0 || had_drop;
+                return (send.pending.unacked() > 0) || send.fin_pending;
             }
 
             let mut admitted = object_status.admitted;
