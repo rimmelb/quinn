@@ -266,9 +266,6 @@ impl<'a> SendStream<'a> {
         }
 
         let mut was_pending = stream.stream_pending;
-        if self.id.index() < 11 {
-            was_pending = false;
-        }
         let written = stream.write(source, limit)?;
         self.state.data_sent += written.bytes as u64;
         self.state.unacked_data += written.bytes as u64;
@@ -494,6 +491,9 @@ impl PendingStreamsQueue {
         // after all other queued streams of the same priority.
         // This is enough to implement round-robin scheduling for streams that are still pending even after being handled,
         // as in that case they are removed from the `BinaryHeap`, handled, and then immediately reinserted.
+        if self.next.as_ref().is_some_and(|p| p.id == id) || self.iter().any(|p| p.id == id) {
+            return;
+        }
         self.recency -= 1;
         self.streams.push(PendingStream {
             priority,
