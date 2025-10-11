@@ -635,13 +635,18 @@ impl StreamsState {
         fair: bool,
         deadline_ctx: Option<StreamsDeadlineContext<'_>>,
     ) -> StreamMetaVec {
+
         let mut stream_frames = StreamMetaVec::new();
+
         let mut deferred: Vec<(StreamId, i32, Option<u64>)> = Vec::new();
+
         let scheduler_now = deadline_ctx
             .as_ref()
             .map(|ctx| ctx.now)
             .unwrap_or_else(Instant::now);
+
         let mut blocked_by_admission = false;
+
         self.deadline_blocked_last = false;
 
         while buf.len() + frame::Stream::SIZE_BOUND < max_buf_size {
@@ -709,6 +714,7 @@ impl StreamsState {
                         "stream temporarily idle (no pending or ready), skipping requeue"
                 );                
             }
+                
                 continue;
             }
 
@@ -1191,10 +1197,7 @@ impl StreamsState {
                     // );
                     return true;
                 } else {
-                    // ❌ NEM ADMITTED: ELDOBJUK az objektumot AZONNAL
-                    // ✅ Csak akkor dobhatjuk el, ha SEMMIT nem küldtünk belőle
                     if !send.pending.can_discard_unsent_prefix() {
-                        // Ha már elkezdtük küldeni, akkor FORCE-ADMIT
                         tracing::debug!(
                             target = "bbr.deadline",
                             stream_id = ?stream_id,
@@ -1208,6 +1211,7 @@ impl StreamsState {
                     // ✅ Az objektum TELJESEN UNSENT, eldobhatjuk
                     let dropped_len = send.pending.discard_unsent_prefix(object_size);
                     let dropped_total = hints.discard_current_object().unwrap_or(object_size);
+                    send.stream_pending = false;
                     
                     tracing::debug!(
                         target = "bbr.deadline",

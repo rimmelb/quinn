@@ -307,7 +307,8 @@ pub(super) struct Send {
     pub(super) connection_blocked: bool,
     /// The reason the peer wants us to stop, if `STOP_SENDING` was received
     pub(super) stop_reason: Option<VarInt>,
-
+    /// pending if object drop
+    pub(super) stream_pending: bool,
     ///Size of the objects including the size of the subgroupheader
     pub(super) object_sizes: Option<StreamHints>,
 }
@@ -326,6 +327,7 @@ impl Send {
             connection_blocked: false,
             stop_reason: None,
             object_sizes: None,
+            stream_pending: false,
         })
     }
 
