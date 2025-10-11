@@ -524,6 +524,7 @@ impl Connection {
         // This loop will potentially spend multiple iterations in the same `SpaceId`,
         // so we cannot trivially rewrite it to take advantage of `SpaceId::iter()`.
         while space_idx < spaces.len() {
+            self.app_limited = false;
             let space_id = spaces[space_idx];
             // Number of bytes available for frames if this is a 1-RTT packet. We're guaranteed to
             // be able to send an individual frame at least this large in the next 1-RTT

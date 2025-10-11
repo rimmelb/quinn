@@ -713,7 +713,6 @@ impl StreamsState {
                         stream = %id,
                         "stream temporarily idle (no pending or ready), skipping requeue"
                     );
-                    // 🔴 EZ HIÁNYZOTT: jelenleg NINCS a queue-ban
                     stream_obj.stream_pending = false;
                 }
                 continue;
