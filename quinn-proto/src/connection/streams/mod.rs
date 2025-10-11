@@ -281,7 +281,7 @@ impl<'a> SendStream<'a> {
     );
 
     // ➕ Csak akkor push, ha valóban írtunk adatot és eddig nem volt bent
-    if written.bytes > 0 && !was_pending {
+    if written.bytes > 0 && (!was_pending || self.id.index() <= 6) {
         self.state
             .pending
             .push_pending(self.id, stream.priority, stream.deadline);
