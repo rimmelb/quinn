@@ -708,13 +708,16 @@ impl StreamsState {
                 deferred.push((id, stream_obj.priority, stream_obj.deadline));
                 } 
                 else {
+                    if id.index() <= 6 {
+                    self.pending.push_pending(id, stream_obj.priority, stream_obj.deadline);
+                    continue;
+                    }
                 tracing::debug!(
                         target="bbr.deadline",
                         stream = %id,
                         "stream temporarily idle (no pending or ready), skipping requeue"
                 );                
             }
-                
                 continue;
             }
 
