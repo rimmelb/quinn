@@ -1084,6 +1084,18 @@ impl StreamsState {
             return false;
         }
 
+            // 🔹 Control streamek (SETTINGS, CONNECT, SETUP, CONTROL) mindig engedélyezve
+        if stream_id.index() <= 6 {
+            tracing::debug!(
+                target = "bbr.control",
+                ?stream_id,
+                "control stream auto-admitted (SETTINGS/CONNECT/SETUP)"
+            );
+            send.stream_pending = true;
+            return true;
+        }
+
+
         let Some(hints) = send.object_sizes.as_mut() else {
             return true;
         };
