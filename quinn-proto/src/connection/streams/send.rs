@@ -327,7 +327,7 @@ impl Send {
             connection_blocked: false,
             stop_reason: None,
             object_sizes: None,
-            stream_pending: false,
+            stream_pending: true,
         })
     }
 
