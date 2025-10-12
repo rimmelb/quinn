@@ -15,6 +15,8 @@ pub(crate) struct BandwidthEstimation {
     prev_sent_time: Option<Instant>,
     max_filter: MinMax,
     acked_at_last_window: u64,
+    // FIX: külsőleg beállított fix sávszélesség (bytes/s)
+    fixed_bw_bytes_per_sec: Option<u64>,
 }
 
 impl BandwidthEstimation {
@@ -38,6 +40,8 @@ impl BandwidthEstimation {
         self.prev_acked_time = self.acked_time;
         self.acked_time = Some(now);
 
+        // Meglévő becslés frissítése továbbra is történik,
+        // de get_estimate() fix esetén felülírja ezt.
         let prev_sent_time = match self.prev_sent_time {
             Some(prev_sent_time) => prev_sent_time,
             None => return,
@@ -49,7 +53,7 @@ impl BandwidthEstimation {
                 sent_time - prev_sent_time,
             )
             .unwrap_or(0),
-            _ => u64::MAX, // will take the min of send and ack, so this is just a skip
+            _ => u64::MAX,
         };
 
         let ack_rate = match self.prev_acked_time {
@@ -67,6 +71,11 @@ impl BandwidthEstimation {
         }
     }
 
+    // FIX: setter az alter_fix_bandwidth-hez
+    pub(crate) fn set_fix_bandwidth(&mut self, value: Option<u64>) {
+        self.fixed_bw_bytes_per_sec = value;
+    }
+
     pub(crate) fn bytes_acked_this_window(&self) -> u64 {
         self.total_acked - self.acked_at_last_window
     }
@@ -76,6 +85,10 @@ impl BandwidthEstimation {
     }
 
     pub(crate) fn get_estimate(&self) -> u64 {
+        // FIX: ha van fix érték, azt használjuk alapként
+        if let Some(fixed) = self.fixed_bw_bytes_per_sec {
+            return fixed;
+        }
         self.max_filter.get()
     }
 

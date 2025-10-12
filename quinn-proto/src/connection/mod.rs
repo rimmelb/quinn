@@ -3835,6 +3835,10 @@ impl Connection {
         self.path.congestion.can_admit_object(object_size, deadline, now, rtt)
     }
 
+    pub fn alter_fix_bandwidth(&self, bandwidth: Option<u32>) -> bool {
+        self.path.congestion.alter_fix_bandwidth(bandwidth)
+    }
+
     /// New: delivery_timeout setter for congestion
     pub fn set_deadline(&mut self,
         deadline: Option<Instant>,

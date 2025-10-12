@@ -545,6 +545,14 @@ impl Connection {
             .clone_box()
     }
 
+    pub fn alter_fix_bandwidth(&self, bandwidth: Option<u32>) -> bool {
+        self.0
+        .state
+        .lock("altering fix bandwidth")
+        .inner
+        .alter_fix_bandwidth(bandwidth)
+    }
+
     // Use u64 and Option<Instant>, and return the bool result.
     pub fn can_send_suggestion(&self, object_size: u64, deadline: Option<Instant>, now: Instant) -> bool {
         self.0
