@@ -545,6 +545,8 @@ impl Connection {
             .clone_box()
     }
 
+    /// Alters the fixed bandwidth setting for the connection.
+    /// A boolean indicating whether the operation was successful.
     pub fn alter_fix_bandwidth(&self, bandwidth: Option<u32>) -> bool {
         self.0
         .state
