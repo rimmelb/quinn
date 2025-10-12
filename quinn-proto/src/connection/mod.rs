@@ -3835,7 +3835,8 @@ impl Connection {
         self.path.congestion.can_admit_object(object_size, deadline, now, rtt)
     }
 
-    pub fn alter_fix_bandwidth(&self, bandwidth: Option<u32>) -> bool {
+    ///New: alter fix bandwidth
+    pub fn alter_fix_bandwidth(&mut self, bandwidth: Option<u32>) -> bool {
         self.path.congestion.alter_fix_bandwidth(bandwidth)
     }
 

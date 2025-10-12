@@ -97,8 +97,8 @@ pub trait Controller: Send + Sync {
     }
 
     //altering fix bandwidth
-    fn alter_fix_bandwidth(&self, bandwidth: Option<u32>) -> bool {
-        true
+    fn alter_fix_bandwidth(&mut self, bandwidth: Option<u32>) -> bool {
+        false
     }
 
     /// New: suggest priority based on deadline + current network state

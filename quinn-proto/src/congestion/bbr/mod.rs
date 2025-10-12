@@ -188,42 +188,6 @@ impl Bbr {
         );
     }
 
-    pub fn alter_fix_bandwidth(&mut self, bandwidth_mbps: Option<u32>) {
-    if let Some(mbps) = bandwidth_mbps {
-        // Mbps → bit/s → byte/s
-        let bps: u64 = (mbps as u64) * 1_000_000;
-        let bytes_per_sec: u64 = bps / 8;
-
-        // a BandwidthEstimation-ben legyen egy ilyen metódus:
-        // pub fn set_fix_bandwidth(&self, value: Option<u64>)
-        self.max_bandwidth.set_fix_bandwidth(Some(bytes_per_sec));
-
-        tracing::info!(
-            target: "bbr.fixedrate",
-            "Fixed bandwidth override set: {} Mbps ({} bytes/s)",
-            mbps,
-            bytes_per_sec
-        );
-
-        // pacing_rate frissítés (opcionális)
-        let new_pacing =
-            (bytes_per_sec as f64 * self.pacing_gain as f64).round() as u64;
-        tracing::debug!(
-            target: "bbr.fixedrate",
-            "Updated pacing_rate = {} B/s (gain = {:.2})",
-            new_pacing,
-            self.pacing_gain
-        );
-    } else {
-        // töröljük a fix limitet → vissza dinamikus becslésre
-        self.max_bandwidth.set_fix_bandwidth(None);
-        tracing::info!(
-            target: "bbr.fixedrate",
-            "Fixed bandwidth override cleared — reverting to measured BBR estimate"
-        );
-    }
-    }
-
     fn enter_startup_mode(&mut self) {
         self.mode = Mode::Startup;
         self.pacing_gain = self.high_gain;
@@ -548,6 +512,32 @@ impl Controller for Bbr {
         self.acked_bytes += bytes;
         if self.is_min_rtt_expired(now, app_limited) || self.min_rtt > rtt.min() {
             self.min_rtt = rtt.min();
+        }
+    }
+
+    fn alter_fix_bandwidth(&mut self, bandwidth: Option<u32>) -> bool {
+        match bandwidth {
+            Some(mbps) => {
+                // Mbps -> B/s
+                let bps_bits = (mbps as u64) * 1_000_000;
+                let bytes_per_sec = bps_bits / 8;
+                self.max_bandwidth.set_fix_bandwidth(Some(bytes_per_sec));
+                // azonnali pacing frissítés
+                self.pacing_rate = (bytes_per_sec as f64 * self.pacing_gain as f64) as u64;
+                tracing::info!(
+                    target: "bbr.fixedrate",
+                    "Fixed bandwidth set: {} Mbps ({} B/s), pacing={} B/s, gain={:.2}",
+                    mbps, bytes_per_sec, self.pacing_rate, self.pacing_gain
+                );
+                true
+            }
+            None => {
+                self.max_bandwidth.set_fix_bandwidth(None);
+                // Következő ciklus számolja újra
+                self.pacing_rate = 0;
+                tracing::info!(target: "bbr.fixedrate", "Fixed bandwidth cleared");
+                true
+            }
         }
     }
 
