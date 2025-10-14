@@ -1,9 +1,37 @@
 use bytes::Bytes;
 use thiserror::Error;
-use core::time;
-use std::time::Instant;
+use std::{collections::VecDeque};
 
 use crate::{VarInt, connection::send_buffer::SendBuffer, frame};
+
+
+#[derive(Debug)]
+pub(super) struct ObjectSize {
+    total_len: u64,
+    deadline: Option<u64>
+}
+
+#[derive(Debug)]
+pub(super) struct StreamHints {
+    objects: VecDeque<ObjectSize>,
+    bytes_written: u64
+}
+
+impl StreamHints {
+    pub(super) fn new() -> Self {
+        Self {
+            objects: VecDeque::new(),
+            bytes_written: 0
+        }
+    }
+
+pub fn append_object_size(&mut self, object_size: u64, deadline: Option<u64>) {
+        self.objects.push_back(ObjectSize {
+            total_len: object_size,
+            deadline
+        });
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct Send {
@@ -13,8 +41,6 @@ pub(super) struct Send {
     pub(super) priority: i32,
     // Deadline alapú ütemezéshez opcionális abszolút határidő
     pub(super) deadline: Option<u64>,
-    // Slack (ms) – utolsó számított érték (diagnosztika / requeue logika)
-    pub(super) slack_ms: Option<f64>,
     // Priority frissült-e úgy, hogy a pending queue entry-t frissíteni kell
     pub(super) priority_dirty: bool,
     /// Whether a frame containing a FIN bit must be transmitted, even if we don't have any new data
@@ -23,6 +49,8 @@ pub(super) struct Send {
     pub(super) connection_blocked: bool,
     /// The reason the peer wants us to stop, if `STOP_SENDING` was received
     pub(super) stop_reason: Option<VarInt>,
+    //Size of the object received from application layer
+    pub(super) object_sizes: Option<StreamHints>
 }
 
 impl Send {
@@ -33,11 +61,11 @@ impl Send {
             pending: SendBuffer::new(),
             priority: 0,
             deadline: None,
-            slack_ms: None,
             priority_dirty: false,
             fin_pending: false,
             connection_blocked: false,
             stop_reason: None,
+            object_sizes: None
         })
     }
 
@@ -159,30 +187,17 @@ impl Send {
         // A prioritást csak akkor frissítjük automatikusan, ha van slack számítás felsőbb rétegen.
         self.priority_dirty = true;
     }
-
-    /// Belső API: slack alapú prioritás beállítása ms-ben
-    pub(super) fn set_slack_ms(&mut self, slack_ms: f64) {
-        self.slack_ms = Some(slack_ms);
-        let new_prio = slack_to_priority(slack_ms);
-        if new_prio != self.priority {
-            self.priority = new_prio;
-            self.priority_dirty = true;
+    
+    pub(super) fn append_object_size(&mut self, object_size: u64, deadline: Option<u64>) {
+        if self.object_sizes.is_none() {
+            self.object_sizes = Some(StreamHints::new());
+        }
+        if let Some(hints) = &mut self.object_sizes {
+            hints.append_object_size(object_size, deadline);
         }
     }
 }
 
-/// Alkalmazásban korábban használt threshold mapping integrálása.
-#[inline]
-pub(super) fn slack_to_priority(slack_ms: f64) -> i32 {
-    if !slack_ms.is_finite() { return 127; }
-    if slack_ms <= 0.0 { return 0; }
-    if slack_ms < 50.0 { return 8; }
-    if slack_ms < 100.0 { return 16; }
-    if slack_ms < 250.0 { return 32; }
-    if slack_ms < 500.0 { return 64; }
-    if slack_ms < 1000.0 { return 96; }
-    127
-}
 
 /// A [`BytesSource`] implementation for `&'a mut [Bytes]`
 ///

@@ -377,12 +377,12 @@ impl<'a> SendStream<'a> {
             .map(get_or_insert_send(max_send_data))
             .ok_or(ClosedStream { _private: () })?;
         stream.set_deadline(deadline);
-        if stream.is_pending() { self.state.pending.push_pending(self.id, stream.priority, stream.deadline); }
         Ok(())
     }
 
-    /// Set slack (milliseconds) relative urgency; mapped to priority internally
-    pub fn set_slack_ms(&mut self, slack_ms: f64) -> Result<(), ClosedStream> {
+
+    //Object size received from application layer
+    pub fn append_size(&mut self, object_size: u64, deadline: Option<u64>) -> Result<(), ClosedStream> {
         let max_send_data = self.state.max_send_data(self.id);
         let stream = self
             .state
@@ -390,8 +390,7 @@ impl<'a> SendStream<'a> {
             .get_mut(&self.id)
             .map(get_or_insert_send(max_send_data))
             .ok_or(ClosedStream { _private: () })?;
-        stream.set_slack_ms(slack_ms);
-        if stream.is_pending() { self.state.pending.push_pending(self.id, stream.priority, stream.deadline); }
+        stream.append_object_size(object_size, deadline);
         Ok(())
     }
 }

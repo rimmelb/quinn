@@ -541,58 +541,58 @@ impl Connection {
                 continue;
             }
 
-            let mut admit_streams: HashSet<StreamId> = HashSet::new();
+            // let mut admit_streams: HashSet<StreamId> = HashSet::new();
 
-            if space_id == SpaceId::Data && can_send.other {
-                if self.streams.can_send_stream_data() {
-                    let rtt = self.path.rtt.get();
-                    let congestion = self.path.congestion.as_ref() as &dyn crate::congestion::Controller;
+            // if space_id == SpaceId::Data && can_send.other {
+            //     if self.streams.can_send_stream_data() {
+            //         let rtt = self.path.rtt.get();
+            //         let congestion = self.path.congestion.as_ref() as &dyn crate::congestion::Controller;
 
-                    let admitted = self.streams.filter_pending_by_deadline(
-                        now,
-                        |_stream_id, deadline, pending_bytes| {
-                            congestion.can_admit_object(pending_bytes, deadline, now, rtt)
-                        }
-                    );
+            //         let admitted = self.streams.filter_pending_by_deadline(
+            //             now,
+            //             |_stream_id, deadline, pending_bytes| {
+            //                 congestion.can_admit_object(pending_bytes, deadline, now, rtt)
+            //             }
+            //         );
 
-                    admit_streams = admitted;
+            //         admit_streams = admitted;
 
-                    if admit_streams.is_empty() {
-                        let pending_with_bytes: Vec<_> = self.streams.iter_pending_with_bytes().collect();
-                        if !pending_with_bytes.is_empty() {
-                            let mut dropped_any = false;
-                            for (sid, _) in pending_with_bytes {
-                                if self.streams.abort_pending_stream(
-                                    sid,
-                                    VarInt::from_u32(0),
-                                    &mut self.spaces[SpaceId::Data as usize].pending,
-                                ) {
-                                    dropped_any = true;
-                                    tracing::warn!(
-                                        target="bbr.deadline",
-                                        stream=?sid,
-                                        "dropping stream due to missed delivery deadline"
-                                    );
-                                }
-                            }
-                            if dropped_any {
-                                if !self.streams.can_send_stream_data() {
-                                    can_send.other = false;
-                                }
-                                continue;
-                            }
-                        }
+            //         if admit_streams.is_empty() {
+            //             let pending_with_bytes: Vec<_> = self.streams.iter_pending_with_bytes().collect();
+            //             if !pending_with_bytes.is_empty() {
+            //                 let mut dropped_any = false;
+            //                 for (sid, _) in pending_with_bytes {
+            //                     if self.streams.abort_pending_stream(
+            //                         sid,
+            //                         VarInt::from_u32(0),
+            //                         &mut self.spaces[SpaceId::Data as usize].pending,
+            //                     ) {
+            //                         dropped_any = true;
+            //                         tracing::warn!(
+            //                             target="bbr.deadline",
+            //                             stream=?sid,
+            //                             "dropping stream due to missed delivery deadline"
+            //                         );
+            //                     }
+            //                 }
+            //                 if dropped_any {
+            //                     if !self.streams.can_send_stream_data() {
+            //                         can_send.other = false;
+            //                     }
+            //                     continue;
+            //                 }
+            //             }
 
-                        tracing::debug!(
-                            target="bbr.deadline",
-                            "no streams passed admission -> disabling can_send.other"
-                        );
-                        can_send.other = false;
-                    }
-                } else {
-                    can_send.other = false;
-                }
-            }
+            //             tracing::debug!(
+            //                 target="bbr.deadline",
+            //                 "no streams passed admission -> disabling can_send.other"
+            //             );
+            //             can_send.other = false;
+            //         }
+            //     } else {
+            //         can_send.other = false;
+            //     }
+            // }
 
             let mut ack_eliciting = !self.spaces[space_id].pending.is_empty(&self.streams)
                 || self.spaces[space_id].ping_pending
@@ -931,7 +931,7 @@ impl Connection {
             }
 
             let sent =
-                self.populate_packet(now, space_id, buf, builder.max_size, builder.exact_number, admit_streams);
+                self.populate_packet(now, space_id, buf, builder.max_size, builder.exact_number);
 
             // ACK-only packets should only be sent when explicitly allowed. If we write them due to
             // any other reason, there is a bug which leads to one component announcing write
@@ -3207,7 +3207,6 @@ impl Connection {
         buf: &mut Vec<u8>,
         max_size: usize,
         pn: u64,
-        admitted_streams: HashSet<StreamId>
     ) -> SentFrames {
         let mut sent = SentFrames::default();
         let space = &mut self.spaces[space_id];
@@ -3457,7 +3456,6 @@ impl Connection {
                 buf,
                 max_size,
                 self.config.send_fairness,
-                admitted_streams
             );
 
             self.stats.frame_tx.stream += sent.stream_frames.len() as u64;

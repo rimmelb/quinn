@@ -582,6 +582,7 @@ impl Connection {
             .enable_deadline_scheduler(deadline_scheduler)
     }
 
+
     /// Parameters negotiated during the handshake
     ///
     /// Guaranteed to return `Some` on fully established connections or after
