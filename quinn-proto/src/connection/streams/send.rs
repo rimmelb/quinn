@@ -7,7 +7,7 @@ use crate::{VarInt, connection::send_buffer::SendBuffer, frame};
 
 #[derive(Debug)]
 pub(super) struct ObjectSize {
-    total_len: u64,
+    pub total_len: u64,
     deadline: Option<u64>
 }
 
@@ -31,6 +31,10 @@ pub fn append_object_size(&mut self, object_size: u64, deadline: Option<u64>) {
             deadline
         });
     }
+
+pub fn pop_last_object(&mut self) -> Option<&ObjectSize> {
+        self.objects.back()
+}
 }
 
 #[derive(Debug)]
@@ -187,7 +191,7 @@ impl Send {
         // A prioritást csak akkor frissítjük automatikusan, ha van slack számítás felsőbb rétegen.
         self.priority_dirty = true;
     }
-    
+
     pub(super) fn append_object_size(&mut self, object_size: u64, deadline: Option<u64>) {
         if self.object_sizes.is_none() {
             self.object_sizes = Some(StreamHints::new());
