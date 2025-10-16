@@ -32,7 +32,7 @@ pub fn append_object_size(&mut self, object_size: u64, deadline: Option<u64>) {
         });
     }
 
-pub fn pop_last_object(&mut self) -> Option<&ObjectSize> {
+pub fn get_last_object(&mut self) -> Option<&ObjectSize> {
         self.objects.back()
 }
 

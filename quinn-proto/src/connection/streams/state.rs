@@ -721,7 +721,7 @@ impl StreamsState {
             offset_size = stream.pending.offset(),
             unsent_size = stream.pending.unsent,
             unacked_size = stream.pending.unacked_len,
-            object_size = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)), "writing_stream");
+            object_size = stream.object_sizes.as_mut().and_then(|hints| hints.get_last_object().map(|obj| obj.total_len)), "writing_stream");
 
             // Reset streams aren't removed from the pending list and still exist while the peer
             // hasn't acknowledged the reset, but should not generate STREAM frames, so we need to
@@ -735,14 +735,14 @@ impl StreamsState {
             let mut unacked_len = stream.pending.unacked_len;
             let mut size_of_last_object = stream.pending.offset();
 
-            if let Some(last_object_size) = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)) {
+            if let Some(last_object_size) = stream.object_sizes.as_mut().and_then(|hints| hints.get_last_object().map(|obj| obj.total_len)) {
                 offset = offset + last_object_size;
                 unacked_len = unacked_len + last_object_size as usize;
                 size_of_last_object = last_object_size;
             }
 
 
-        if let Some(last_object_size) = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)) {
+        if let Some(last_object_size) = stream.object_sizes.as_mut().and_then(|hints| hints.get_last_object().map(|obj| obj.total_len)) {
             if offset - stream.pending.unsent == last_object_size && unacked_len > 0 && last_object_size > 0 {
 
             // Ellenőrizzük, hogy van-e objektum, amit ki kell küldenünk
@@ -750,7 +750,7 @@ impl StreamsState {
             let mut last_object_size: Option<u64> = None;
 
             if let Some(hints) = stream.object_sizes.as_mut() {
-                if let Some(object) = hints.pop_last_object() {
+                if let Some(object) = hints.get_last_object() {
                     last_object_size = Some(object.total_len);
                     let stream_deadline = stream.deadline;
                     let deadline_ms = object.deadline.or(stream_deadline);
@@ -824,12 +824,9 @@ impl StreamsState {
             }
         }
         else {
-            stream.pending.offset += size_of_last_object;
-            stream.pending.unacked_len += size_of_last_object as usize;
+            stream.pending.write_offset_unacked(size_of_last_object);
         }
-
-        }
-            
+        }  
             tracing::debug!(
                 target="bbr.deadline",
                 offset = stream.pending.offset(),

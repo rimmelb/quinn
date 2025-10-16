@@ -43,6 +43,12 @@ impl SendBuffer {
         self.unacked_segments.push_back(data);
     }
 
+    pub(super) fn write_offset_unacked(&mut self, object_size: u64) {
+        self.unacked_len += object_size as usize;
+        self.offset += object_size;
+    }
+
+
     /// Discard a range of acknowledged stream data
     pub(super) fn ack(&mut self, mut range: Range<u64>) {
         // Clamp the range to data which is still tracked
