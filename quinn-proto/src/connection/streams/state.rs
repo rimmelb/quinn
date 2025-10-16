@@ -717,7 +717,7 @@ impl StreamsState {
                 None => continue,
             };
             
-            tracing::debug!(target="bbr.deadline", size = stream.pending.unacked(), object_size = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)), "writing_stream");
+            tracing::debug!(target="bbr.deadline", size = stream.pending.offset(), object_size = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)), "writing_stream");
 
             // Reset streams aren't removed from the pending list and still exist while the peer
             // hasn't acknowledged the reset, but should not generate STREAM frames, so we need to
@@ -763,15 +763,15 @@ impl StreamsState {
                 }
             }
 
-            if should_drop_object {
-                let object_size = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len));
-                if stream.pending.unacked().saturating_sub(object_size.unwrap_or(0)) < 140 {
-                    should_drop_object = true;
-                }
-                else {
-                    should_drop_object = false;
-                }
-            }
+            // if should_drop_object {
+            //     let object_size = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len));
+            //     if stream.pending.unacked().saturating_sub(object_size.unwrap_or(0)) < 140 {
+            //         should_drop_object = true;
+            //     }
+            //     else {
+            //         should_drop_object = false;
+            //     }
+            // }
 
             // Ha el kell dobni az objektumot
             if should_drop_object {
