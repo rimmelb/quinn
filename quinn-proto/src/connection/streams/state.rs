@@ -763,6 +763,16 @@ impl StreamsState {
                 }
             }
 
+            if should_drop_object {
+                let mut object_size = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len);
+                if (stream.pending.unacked() - object_size) < 140 {
+                    should_drop_object = true;
+                }
+                else {
+                    should_drop_object = false;
+                }
+            }
+
             // Ha az objektumot el kell dobnunk, akkor töröljük az adatokat és folytatjuk
             if should_drop_object {
                 if let Some(obj_size) = last_object_size {
