@@ -136,22 +136,24 @@ impl Send {
             }
 
             limit -= chunk.len();
-
-            if self.object_sizes.is_none() {
-            self.pending.write(chunk);
-            }
             
-            else {
-                if let Some(hints) = self.object_sizes.as_ref() {
-                    if let Some(last_object_size) = hints.peek_last_object_size() {
-                        if last_object_size > 500 {
-                            self.pending.write(chunk);
-                }
+            if let Some(hints) = self.object_sizes.as_ref() {
+            // Ha van utolsó objektum méret, ellenőrizzük a feltételt
+                if let Some(last_object_size) = hints.peek_last_object_size() {
+                    if last_object_size > 500 {
+                        self.pending.write(chunk);
+                    } 
+                    else {
+                        self.pending.write_without_offset(chunk);
+                    }
                 } 
                 else {
-                self.pending.write_without_offset(chunk);
-            }
-            }
+                    // Ha nincs utolsó objektum méret, írjunk offset nélkül
+                    self.pending.write(chunk);
+                }
+            } else {
+                // Ha nincs object_sizes, írjunk normálisan
+                self.pending.write(chunk);
             }
         }
         Ok(result)
