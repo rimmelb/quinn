@@ -40,11 +40,11 @@ impl SendBuffer {
 
     /// Append application data to the end of the stream
     pub(super) fn write_without_offset(&mut self, data: Bytes) {
+        self.unacked_len += data.len();
         self.unacked_segments.push_back(data);
     }
 
     pub(super) fn write_offset_unacked(&mut self, object_size: u64) {
-        //self.unacked_len += object_size as usize;
         self.offset += object_size;
     }
 
@@ -86,6 +86,12 @@ impl SendBuffer {
 
     // truncate dropped objects
     pub(super) fn truncate(&mut self, bytes: u64) -> u64 {
+        let unsent_data = self.offset - self.unsent;
+        let bytes_to_remove = bytes.min(unsent_data);
+        
+        if bytes_to_remove == 0 {
+            return 0;
+        }
         // Eltávolítjuk a szegmenseket hátulról
         let mut remaining = bytes as usize;
         while remaining > 0 && !self.unacked_segments.is_empty() {
