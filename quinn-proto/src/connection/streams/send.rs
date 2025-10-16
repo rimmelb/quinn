@@ -132,7 +132,13 @@ impl Send {
             }
 
             limit -= chunk.len();
+
+            if self.object_sizes.is_none() {
             self.pending.write(chunk);
+            }
+            else {
+                self.pending.write_without_offset(data);
+            }
         }
 
         Ok(result)

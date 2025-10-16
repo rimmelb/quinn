@@ -33,8 +33,13 @@ impl SendBuffer {
 
     /// Append application data to the end of the stream
     pub(super) fn write(&mut self, data: Bytes) {
-        //self.unacked_len += data.len();
-        //self.offset += data.len() as u64;
+        self.unacked_len += data.len();
+        self.offset += data.len() as u64;
+        self.unacked_segments.push_back(data);
+    }
+
+    /// Append application data to the end of the stream
+    pub(super) fn write_without_offset(&mut self, data: Bytes) {
         self.unacked_segments.push_back(data);
     }
 
