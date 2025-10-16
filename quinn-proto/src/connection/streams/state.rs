@@ -716,12 +716,6 @@ impl StreamsState {
                 // Stream was reset with pending data and the reset was acknowledged
                 None => continue,
             };
-            
-            tracing::debug!(target="bbr.deadline", 
-            offset_size = stream.pending.offset(),
-            unsent_size = stream.pending.unsent,
-            unacked_size = stream.pending.unacked_len,
-            object_size = stream.object_sizes.as_mut().and_then(|hints| hints.get_last_object().map(|obj| obj.total_len)), "writing_stream");
 
             // Reset streams aren't removed from the pending list and still exist while the peer
             // hasn't acknowledged the reset, but should not generate STREAM frames, so we need to
@@ -731,29 +725,27 @@ impl StreamsState {
             }
 
             
-            let mut offset = stream.pending.offset();
-            let mut unacked_len = stream.pending.unacked_len;
-            let mut size_of_last_object = stream.pending.offset();
+            // CSAK EGYSZER kérdezzük le az objektumot
+            let last_object = stream.object_sizes.as_mut()
+                .and_then(|hints| hints.get_last_object())
+                .map(|obj| (obj.total_len, obj.deadline));
 
-            if let Some(last_object_size) = stream.object_sizes.as_mut().and_then(|hints| hints.get_last_object().map(|obj| obj.total_len)) {
-                offset = offset + last_object_size;
-                unacked_len = unacked_len + last_object_size as usize;
-                size_of_last_object = last_object_size;
-            }
+            tracing::debug!(
+                target="bbr.deadline", 
+                offset_size = stream.pending.offset(),
+                unsent_size = stream.pending.unsent,
+                unacked_size = stream.pending.unacked_len,
+                object_size = last_object.map(|(size, _)| size),
+                "writing_stream"
+            );
 
-
-        if let Some(last_object_size) = stream.object_sizes.as_mut().and_then(|hints| hints.get_last_object().map(|obj| obj.total_len)) {
-            if offset - stream.pending.unsent == last_object_size && unacked_len > 0 && last_object_size > 0 {
-
-            // Ellenőrizzük, hogy van-e objektum, amit ki kell küldenünk
-            let mut should_drop_object = false;
-            let mut last_object_size: Option<u64> = None;
-
-            if let Some(hints) = stream.object_sizes.as_mut() {
-                if let Some(object) = hints.get_last_object() {
-                    last_object_size = Some(object.total_len);
-                    let stream_deadline = stream.deadline;
-                    let deadline_ms = object.deadline.or(stream_deadline);
+            // Admission control ellenőrzés
+            let should_drop = if let Some((obj_size, obj_deadline)) = last_object {
+                let unsent_data = stream.pending.offset() - stream.pending.unsent;
+                
+                // Csak akkor vizsgáljuk, ha ez az objektum van küldés alatt
+                if unsent_data == obj_size && stream.pending.unacked_len > 0 {
+                    let deadline_ms = obj_deadline.or(stream.deadline);
                     
                     if let Some(deadline_ms) = deadline_ms {
                         let deadline = if deadline_ms == 0 {
@@ -764,49 +756,52 @@ impl StreamsState {
                         
                         let allow = deadline_ctx.as_ref()
                             .map(|ctx| {
-                                ctx.controller
-                                    .can_admit_object(last_object_size.unwrap_or(0), deadline, ctx.now, ctx.rtt)
+                                ctx.controller.can_admit_object(
+                                    obj_size,
+                                    deadline,
+                                    ctx.now,
+                                    ctx.rtt
+                                )
                             })
                             .unwrap_or(true);
                         
-                        if !allow {
-                            should_drop_object = true;
-                            tracing::warn!(
-                                target="bbr.deadline",
-                                stream=?id,
-                                object_size=last_object_size,
-                                "dropping object due to admission rejection"
-                            );
-                        }
+                        !allow
+                    } else {
+                        false
                     }
+                } else {
+                    false
                 }
-            }
+            } 
+            else {
+                false
+            };
 
             // Ha el kell dobni az objektumot
-            if should_drop_object {
-                if let Some(obj_size) = last_object_size {
-                    // Használjuk a truncate() metódust az adatok eltávolítására
+            if should_drop {
+                if let Some((obj_size, _)) = last_object {
                     let dropped_bytes = stream.pending.truncate(obj_size);
                     
+                    // Távolítsuk el az objektum metaadatát
                     if let Some(hints) = stream.object_sizes.as_mut() {
                         hints.remove_last_object();
                     }
 
                     if dropped_bytes > 0 {
-                        // Frissítjük a globális unacked_data számlálót
                         self.unacked_data = self.unacked_data.saturating_sub(dropped_bytes);
                         
-                        tracing::debug!(
+                        tracing::warn!(
                             target="bbr.deadline",
                             stream=?id,
                             dropped_bytes,
+                            object_size=obj_size,
                             remaining_unacked=stream.pending.unacked(),
-                            "dropped object data from send buffer"
+                            "dropped object due to admission rejection"
                         );
                     }
                 }
                 
-                // FONTOS: Csak akkor tesszük vissza, ha VAN még pending adat vagy FIN
+                // Csak akkor tesszük vissza, ha VAN még pending adat
                 if stream.is_pending() {
                     if fair {
                         self.pending.push_pending(id, stream.priority, stream.deadline);
@@ -822,11 +817,26 @@ impl StreamsState {
                 }
                 continue;
             }
-        }
-        else {
-            stream.pending.write_offset_unacked(size_of_last_object);
-        }
-        }  
+
+            // Ha NEM dobtuk el, akkor frissítsük az offset-et és unacked_len-t
+            if let Some((obj_size, _)) = last_object {
+                stream.pending.write_offset_unacked(obj_size);
+                
+                // Távolítsuk el az objektum metaadatát
+                if let Some(hints) = stream.object_sizes.as_mut() {
+                    hints.remove_last_object();
+                }
+                
+                tracing::debug!(
+                    target="bbr.deadline",
+                    stream=?id,
+                    added_object_size=obj_size,
+                    new_offset=stream.pending.offset(),
+                    new_unacked=stream.pending.unacked_len,
+                    "adjusted stream offset for object"
+                );
+            }
+            
             tracing::debug!(
                 target="bbr.deadline",
                 offset = stream.pending.offset(),
