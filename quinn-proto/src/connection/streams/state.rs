@@ -776,6 +776,10 @@ impl StreamsState {
                     // Használjuk a truncate() metódust az adatok eltávolítására
                     let dropped_bytes = stream.pending.truncate(obj_size);
                     
+                    if let Some(hints) = stream.object_sizes.as_mut() {
+                        hints.remove_last_object();
+                    }
+
                     if dropped_bytes > 0 {
                         // Frissítjük a globális unacked_data számlálót
                         self.unacked_data = self.unacked_data.saturating_sub(dropped_bytes);
