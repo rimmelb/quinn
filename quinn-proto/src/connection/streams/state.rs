@@ -735,7 +735,7 @@ impl StreamsState {
             if let Some(&last_object_size) = total_lengths.last() {
                 // Az elvárt offset érték: összesített méret mínusz az utolsó elem
                 let expected_offset = total_sum - last_object_size;
-
+                if expected_offset != 0 {
                 // Ha az offset nem egyezik, frissítsük
                 if stream.pending.offset() != expected_offset {
                     tracing::warn!(
@@ -750,7 +750,8 @@ impl StreamsState {
                 }
             }
             }
-            
+            }
+
             // CSAK EGYSZER kérdezzük le az objektumot
             let last_object = stream.object_sizes.as_mut()
                 .and_then(|hints| hints.get_last_object())
