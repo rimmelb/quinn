@@ -730,6 +730,9 @@ impl StreamsState {
                 continue;
             }
 
+        if let Some(last_object_size) = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)) {
+            if stream.pending.offset() - stream.pending.unsent == last_object_size {
+
             // Ellenőrizzük, hogy van-e objektum, amit ki kell küldenünk
             let mut should_drop_object = false;
             let mut last_object_size: Option<u64> = None;
@@ -767,16 +770,6 @@ impl StreamsState {
                 }
             }
 
-            // if should_drop_object {
-            //     let object_size = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len));
-            //     if stream.pending.unacked().saturating_sub(object_size.unwrap_or(0)) < 140 {
-            //         should_drop_object = true;
-            //     }
-            //     else {
-            //         should_drop_object = false;
-            //     }
-            // }
-
             // Ha el kell dobni az objektumot
             if should_drop_object {
                 if let Some(obj_size) = last_object_size {
@@ -813,11 +806,12 @@ impl StreamsState {
                 }
                 continue;
             }
+        }
+        }
             
             tracing::debug!(
                 target="bbr.deadline", 
-                size = stream.pending.unacked(), 
-                object_size = last_object_size, 
+                size = stream.pending.unacked(),
                 "writing_stream"
             );
 
