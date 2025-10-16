@@ -716,50 +716,6 @@ impl StreamsState {
                 // Stream was reset with pending data and the reset was acknowledged
                 None => continue,
             };
-
-            let mut last_object_size: Option<u64> = None;
-            let mut should_reset = false;
-
-            {
-                if stream.is_reset() {
-                    should_reset = true;
-                } 
-                else if let Some(hints) = stream.object_sizes.as_mut() {
-                    if let Some(object) = hints.pop_last_object() {
-                        last_object_size = Some(object.total_len);
-                        let stream_deadline = stream.deadline;
-                        let deadline_ms = object.deadline.or(stream_deadline);
-                        if let Some(deadline_ms) = deadline_ms {
-                            let deadline = if deadline_ms == 0 {
-                                now + Duration::from_millis(3600)
-                            } else {
-                                now + Duration::from_millis(deadline_ms)
-                            };
-                            let allow = deadline_ctx.as_ref()
-                                    .map(|ctx| {
-                                        ctx.controller
-                                            .can_admit_object(last_object_size.unwrap_or(0), deadline, ctx.now, ctx.rtt)
-                                    })
-                                    .unwrap_or(true);
-                            if !allow {
-                                should_reset = true;
-                            }
-                        }
-                    }
-                }
-            }
-            if should_reset {
-                stream.reset();
-                    if should_reset {
-                    tracing::warn!(
-                    target="bbr.deadline",
-                    stream=?id,
-                    object_size=last_object_size,
-                    "resetting stream due to admission rejection"
-                    );
-                }
-                continue;
-            }
             
             tracing::debug!(target="bbr.deadline", size = stream.pending.unacked(), object_size = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)), "writing_stream");
 
@@ -769,6 +725,84 @@ impl StreamsState {
             if stream.is_reset() {
                 continue;
             }
+
+            // Ellenőrizzük, hogy van-e objektum, amit ki kell küldenünk
+            let mut should_drop_object = false;
+            let mut last_object_size: Option<u64> = None;
+
+            if let Some(hints) = stream.object_sizes.as_mut() {
+                if let Some(object) = hints.pop_last_object() {
+                    last_object_size = Some(object.total_len);
+                    let stream_deadline = stream.deadline;
+                    let deadline_ms = object.deadline.or(stream_deadline);
+                    
+                    if let Some(deadline_ms) = deadline_ms {
+                        let deadline = if deadline_ms == 0 {
+                            now + Duration::from_millis(3600)
+                        } else {
+                            now + Duration::from_millis(deadline_ms)
+                        };
+                        
+                        let allow = deadline_ctx.as_ref()
+                            .map(|ctx| {
+                                ctx.controller
+                                    .can_admit_object(last_object_size.unwrap_or(0), deadline, ctx.now, ctx.rtt)
+                            })
+                            .unwrap_or(true);
+                        
+                        if !allow {
+                            should_drop_object = true;
+                            tracing::warn!(
+                                target="bbr.deadline",
+                                stream=?id,
+                                object_size=last_object_size,
+                                "dropping object due to admission rejection"
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Ha az objektumot el kell dobnunk, akkor töröljük az adatokat és folytatjuk
+            if should_drop_object {
+                if let Some(obj_size) = last_object_size {
+                    // Az objektum méretének megfelelő adatot eltávolítjuk a pending bufferből
+                    let bytes_to_drop = obj_size.min(stream.pending.unacked());
+                    if bytes_to_drop > 0 {
+                        // Eltávolítjuk az adatokat
+                        let current_offset = stream.pending.offset();
+                        let drop_range = (current_offset - bytes_to_drop)..current_offset;
+                        stream.pending.ack(drop_range);
+                        
+                        // Frissítjük a statisztikákat
+                        self.unacked_data = self.unacked_data.saturating_sub(bytes_to_drop);
+                        
+                        tracing::debug!(
+                            target="bbr.deadline",
+                            stream=?id,
+                            dropped_bytes=bytes_to_drop,
+                            "dropped object data from send buffer"
+                        );
+                    }
+                }
+                
+                // Ha még van pending adat vagy FIN, visszatesszük a queue-ba
+                if stream.is_pending() {
+                    if fair {
+                        self.pending.push_pending(id, stream.priority, stream.deadline);
+                    } else {
+                        self.pending.reinsert_pending(id, stream.priority);
+                    }
+                }
+                continue;
+            }
+            
+            tracing::debug!(
+                target="bbr.deadline", 
+                size = stream.pending.unacked(), 
+                object_size = last_object_size, 
+                "writing_stream"
+            );
 
             // Now that we know the `StreamId`, we can better account for how many bytes
             // are required to encode it.
