@@ -764,8 +764,8 @@ impl StreamsState {
             }
 
             if should_drop_object {
-                let mut object_size = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len);
-                if (stream.pending.unacked() - object_size) < 140 {
+                let object_size = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len));
+                if (stream.pending.unacked() - object_size.unwrap_or(0)) < 140 {
                     should_drop_object = true;
                 }
                 else {
