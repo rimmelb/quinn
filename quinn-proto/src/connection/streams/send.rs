@@ -39,6 +39,10 @@ pub fn pop_last_object(&mut self) -> Option<&ObjectSize> {
 pub fn remove_last_object(&mut self) {
     self.objects.pop_back();
 }
+
+pub fn peek_last_object_size(&self) -> Option<u64> {
+        self.objects.back().map(|obj| obj.total_len)
+    }
 }
 
 #[derive(Debug)]
@@ -136,11 +140,20 @@ impl Send {
             if self.object_sizes.is_none() {
             self.pending.write(chunk);
             }
+            
             else {
+                if let Some(hints) = self.object_sizes.as_ref() {
+                    if let Some(last_object_size) = hints.peek_last_object_size() {
+                        if last_object_size > 500 {
+                            self.pending.write(chunk);
+                }
+                } 
+                else {
                 self.pending.write_without_offset(chunk);
             }
+            }
+            }
         }
-
         Ok(result)
     }
 
