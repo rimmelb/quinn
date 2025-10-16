@@ -73,6 +73,43 @@ impl SendBuffer {
         }
     }
 
+    // truncate dropped objects
+    pub(super) fn truncate(&mut self, bytes: u64) -> u64 {
+        // Csak a még nem küldött adatokat távolíthatjuk el
+        let unsent_data = self.offset - self.unsent;
+        let bytes_to_remove = bytes.min(unsent_data);
+        
+        if bytes_to_remove == 0 {
+            return 0;
+        }
+        
+        // Csökkentjük az offset-et (a buffer "végét")
+        self.offset -= bytes_to_remove;
+        
+        // Csökkentjük az unacked_len-t
+        self.unacked_len = self.unacked_len.saturating_sub(bytes_to_remove as usize);
+        
+        // Eltávolítjuk a szegmenseket hátulról
+        let mut remaining = bytes_to_remove as usize;
+        while remaining > 0 && !self.unacked_segments.is_empty() {
+            let last_len = self.unacked_segments.back().unwrap().len();
+            
+            if last_len <= remaining {
+                // Teljes szegmenst eltávolítunk
+                self.unacked_segments.pop_back();
+                remaining -= last_len;
+            } else {
+                // Csak a szegmens egy részét távolítjuk el (az utolsó `remaining` byte-ot)
+                let new_len = last_len - remaining;
+                let segment = self.unacked_segments.back_mut().unwrap();
+                *segment = segment.slice(0..new_len);
+                remaining = 0;
+            }
+        }
+        
+        bytes_to_remove
+    }
+
     /// Compute the next range to transmit on this stream and update state to account for that
     /// transmission.
     ///

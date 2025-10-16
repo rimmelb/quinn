@@ -773,28 +773,21 @@ impl StreamsState {
                 }
             }
 
-            // Ha az objektumot el kell dobnunk, akkor töröljük az adatokat és folytatjuk
+            // Ha el kell dobni az objektumot
             if should_drop_object {
                 if let Some(obj_size) = last_object_size {
-                    // Az objektum méretének megfelelő adatot eltávolítjuk a pending bufferből
-                    let bytes_to_drop = obj_size.min(stream.pending.unacked());
-                    if bytes_to_drop > 0 {
-                        // Eltávolítjuk az adatokat
-                        let current_offset = stream.pending.offset();
-                        let drop_range = (current_offset - bytes_to_drop)..current_offset;
-                        stream.pending.ack(drop_range);
-                        if let Some(hints) = stream.object_sizes.as_mut() {
-                            hints.remove_last_object();
-                        }
-                        
-                        // Frissítjük a statisztikákat
-                        self.unacked_data = self.unacked_data.saturating_sub(bytes_to_drop);
-
+                    // Használjuk a truncate() metódust az adatok eltávolítására
+                    let dropped_bytes = stream.pending.truncate(obj_size);
+                    
+                    if dropped_bytes > 0 {
+                        // Frissítjük a globális unacked_data számlálót
+                        self.unacked_data = self.unacked_data.saturating_sub(dropped_bytes);
                         
                         tracing::debug!(
                             target="bbr.deadline",
                             stream=?id,
-                            dropped_bytes=bytes_to_drop,
+                            dropped_bytes,
+                            remaining_unacked=stream.pending.unacked(),
                             "dropped object data from send buffer"
                         );
                     }
