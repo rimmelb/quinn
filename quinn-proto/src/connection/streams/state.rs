@@ -773,9 +773,13 @@ impl StreamsState {
                         let current_offset = stream.pending.offset();
                         let drop_range = (current_offset - bytes_to_drop)..current_offset;
                         stream.pending.ack(drop_range);
+                        if let Some(hints) = stream.object_sizes.as_mut() {
+                            hints.remove_last_object();
+                        }
                         
                         // Frissítjük a statisztikákat
                         self.unacked_data = self.unacked_data.saturating_sub(bytes_to_drop);
+
                         
                         tracing::debug!(
                             target="bbr.deadline",
