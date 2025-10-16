@@ -793,13 +793,19 @@ impl StreamsState {
                     }
                 }
                 
-                // Ha még van pending adat vagy FIN, visszatesszük a queue-ba
+                // FONTOS: Csak akkor tesszük vissza, ha VAN még pending adat vagy FIN
                 if stream.is_pending() {
                     if fair {
                         self.pending.push_pending(id, stream.priority, stream.deadline);
                     } else {
                         self.pending.reinsert_pending(id, stream.priority);
                     }
+                } else {
+                    tracing::debug!(
+                        target="bbr.deadline",
+                        stream=?id,
+                        "stream has no more pending data after drop, not requeuing"
+                    );
                 }
                 continue;
             }
