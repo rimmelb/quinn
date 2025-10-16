@@ -114,7 +114,7 @@ impl Send {
             offset = self.pending.offset(),
             budget = budget,
         );
-        
+
         if budget == 0 {
             return Err(WriteError::Blocked);
         }

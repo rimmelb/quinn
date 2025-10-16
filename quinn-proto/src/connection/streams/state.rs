@@ -729,9 +729,24 @@ impl StreamsState {
             if stream.is_reset() {
                 continue;
             }
+            // pub(super) fn write(&mut self, data: Bytes) {
+            //     self.unacked_len += data.len();
+            //     self.offset += data.len() as u64;
+            //     self.unacked_segments.push_back(data);
+            // }
+
+            
+            let mut offset = stream.pending.offset();
+            let mut unacked_len = stream.pending.unacked_len;
+
+            if let Some(last_object_size) = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)) {
+                offset = offset + last_object_size;
+                unacked_len = unacked_len + last_object_size as usize;
+            }
+
 
         if let Some(last_object_size) = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)) {
-            if stream.pending.offset() - stream.pending.unsent == last_object_size && stream.pending.unacked_len > 0 {
+            if offset - stream.pending.unsent == last_object_size && unacked_len > 0 {
 
             // Ellenőrizzük, hogy van-e objektum, amit ki kell küldenünk
             let mut should_drop_object = false;
@@ -810,6 +825,10 @@ impl StreamsState {
                 }
                 continue;
             }
+        }
+        else {
+            stream.pending.offset += last_object_size;
+            stream.pending.unacked_len += last_object_size as usize;
         }
         }
             

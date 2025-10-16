@@ -8,11 +8,11 @@ use crate::{VarInt, range_set::RangeSet};
 #[derive(Default, Debug)]
 pub(super) struct SendBuffer {
     /// Data queued by the application but not yet acknowledged. May or may not have been sent.
-    unacked_segments: VecDeque<Bytes>,
+    pub unacked_segments: VecDeque<Bytes>,
     /// Total size of `unacked_segments`
     pub unacked_len: usize,
     /// The first offset that hasn't been written by the application, i.e. the offset past the end of `unacked`
-    offset: u64,
+    pub offset: u64,
     /// The first offset that hasn't been sent
     ///
     /// Always lies in (offset - unacked.len())..offset
@@ -33,8 +33,8 @@ impl SendBuffer {
 
     /// Append application data to the end of the stream
     pub(super) fn write(&mut self, data: Bytes) {
-        self.unacked_len += data.len();
-        self.offset += data.len() as u64;
+        //self.unacked_len += data.len();
+        //self.offset += data.len() as u64;
         self.unacked_segments.push_back(data);
     }
 
@@ -75,19 +75,8 @@ impl SendBuffer {
 
     // truncate dropped objects
     pub(super) fn truncate(&mut self, bytes: u64) -> u64 {
-        // Csak a még nem küldött adatokat távolíthatjuk el
-        let unsent_data = self.offset - self.unsent;
-        let bytes_to_remove = bytes.min(unsent_data);
-        
-        if bytes_to_remove == 0 {
-            return 0;
-        }
-        
-        // Csökkentjük az unacked_len-t
-        self.unacked_len = self.unacked_len.saturating_sub(bytes_to_remove as usize);
-        
         // Eltávolítjuk a szegmenseket hátulról
-        let mut remaining = bytes_to_remove as usize;
+        let mut remaining = bytes as usize;
         while remaining > 0 && !self.unacked_segments.is_empty() {
             let last_len = self.unacked_segments.back().unwrap().len();
             
@@ -102,9 +91,8 @@ impl SendBuffer {
                 *segment = segment.slice(0..new_len);
                 remaining = 0;
             }
-        }
-        
-        bytes_to_remove
+        } 
+        bytes
     }
 
     /// Compute the next range to transmit on this stream and update state to account for that
