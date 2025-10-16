@@ -140,18 +140,14 @@ impl Send {
             if let Some(hints) = self.object_sizes.as_ref() {
             // Ha van utolsó objektum méret, ellenőrizzük a feltételt
                 if let Some(last_object_size) = hints.peek_last_object_size() {
-                    if last_object_size > 500 {
-                        self.pending.write(chunk);
-                    } 
-                    else {
                         self.pending.write_without_offset(chunk);
-                    }
                 } 
                 else {
                     // Ha nincs utolsó objektum méret, írjunk offset nélkül
                     self.pending.write(chunk);
                 }
-            } else {
+            } 
+            else {
                 // Ha nincs object_sizes, írjunk normálisan
                 self.pending.write(chunk);
             }
