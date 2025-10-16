@@ -44,7 +44,7 @@ impl SendBuffer {
     }
 
     pub(super) fn write_offset_unacked(&mut self, object_size: u64) {
-        self.unacked_len += object_size as usize;
+        //self.unacked_len += object_size as usize;
         self.offset += object_size;
     }
 
