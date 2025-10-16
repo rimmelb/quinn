@@ -747,7 +747,7 @@ fn can_admit_object(
             bw_bytes_per_sec
         );
         //TODO it should return false in this case, but for testing, we allow all
-        return true;
+        return false;
     }
 
     // commit
