@@ -83,9 +83,6 @@ impl SendBuffer {
             return 0;
         }
         
-        // Csökkentjük az offset-et (a buffer "végét")
-        self.offset -= bytes_to_remove;
-        
         // Csökkentjük az unacked_len-t
         self.unacked_len = self.unacked_len.saturating_sub(bytes_to_remove as usize);
         
