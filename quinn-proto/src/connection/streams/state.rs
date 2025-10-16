@@ -695,6 +695,9 @@ impl StreamsState {
 
     ) -> StreamMetaVec {
         let mut stream_frames = StreamMetaVec::new();
+
+        let mut offset_updated_last_cycle = false;
+
         while buf.len() + frame::Stream::SIZE_BOUND < max_buf_size {
             if max_buf_size
                 .checked_sub(buf.len() + frame::Stream::SIZE_BOUND)
@@ -725,32 +728,26 @@ impl StreamsState {
             }
 
             if let Some(hints) = stream.object_sizes.as_ref() {
-            // Gyűjtsük ki az összes `total_len` értéket
-            let total_lengths: Vec<u64> = hints.objects.iter().map(|object| object.total_len).collect();
+            // Csak akkor ellenőrizd, ha az előző ciklusban nem frissítettük kézzel az offsetet
+            if !offset_updated_last_cycle {
+                let total_lengths: Vec<u64> = hints.objects.iter().map(|object| object.total_len).collect();
+                let total_sum: u64 = total_lengths.iter().sum();
 
-            // Számoljuk ki az összesített méretet
-            let total_sum: u64 = total_lengths.iter().sum();
-
-            // Ellenőrizzük, hogy van-e legalább egy elem
-            if let Some(&last_object_size) = total_lengths.last() {
-                // Az elvárt offset érték: összesített méret mínusz az utolsó elem
-                let expected_offset = total_sum - last_object_size;
-                if expected_offset != 0 {
-                // Ha az offset nem egyezik, frissítsük
-                if stream.pending.offset() != expected_offset {
-                    tracing::warn!(
-                        target = "bbr.debug",
-                        current_offset = stream.pending.offset(),
-                        expected_offset,
-                        "Offset mismatch detected, updating offset"
-                    );
-
-                    // Frissítsük az offset értékét
-                    stream.pending.offset = expected_offset;
+                if let Some(&last_object_size) = total_lengths.last() {
+                    let expected_offset = total_sum - last_object_size;
+                    if expected_offset != 0 && stream.pending.offset() != expected_offset {
+                        tracing::warn!(
+                            target = "bbr.debug",
+                            current_offset = stream.pending.offset(),
+                            expected_offset,
+                            "Offset mismatch detected, updating offset"
+                        );
+                        stream.pending.offset = expected_offset;
+                    }
                 }
             }
             }
-            }
+
 
             // CSAK EGYSZER kérdezzük le az objektumot
             let last_object = stream.object_sizes.as_mut()
@@ -848,7 +845,7 @@ impl StreamsState {
             // Ha NEM dobtuk el, akkor frissítsük az offset-et és unacked_len-t
             if let Some((obj_size, _)) = last_object {
                 stream.pending.write_offset_unacked(obj_size);
-                
+                offset_updated_last_cycle = true;
                 tracing::debug!(
                     target="bbr.deadline",
                     stream=?id,
@@ -857,6 +854,8 @@ impl StreamsState {
                     new_unacked=stream.pending.unacked_len,
                     "adjusted stream offset for object"
                 );
+            } else {
+                offset_updated_last_cycle = false;
             }
             
             tracing::debug!(
