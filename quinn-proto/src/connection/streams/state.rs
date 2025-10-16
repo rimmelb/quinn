@@ -2,7 +2,7 @@ use std::{
     collections::{VecDeque, hash_map},
     convert::TryFrom,
     mem,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use bytes::BufMut;
@@ -14,12 +14,14 @@ use super::{
     StreamHalf, ThinRetransmits,
 };
 use crate::{
-    Dir, MAX_STREAM_COUNT, Side, StreamId, TransportError, VarInt,
-    coding::BufMutExt,
-    connection::stats::FrameStats,
-    frame::{self, FrameStruct, StreamMetaVec},
-    transport_parameters::TransportParameters,
+    coding::BufMutExt, congestion::{self, Controller}, connection::stats::FrameStats, frame::{self, FrameStruct, StreamMetaVec}, transport_parameters::TransportParameters, Dir, Side, StreamId, TransportError, VarInt, MAX_STREAM_COUNT
 };
+
+pub(crate) struct StreamsDeadlineContext<'a> {
+    pub now: Instant,
+    pub rtt: Duration,
+    pub controller: &'a dyn Controller,
+}
 
 /// Wrapper around `Recv` that facilitates reusing `Recv` instances
 #[derive(Debug)]
@@ -688,6 +690,9 @@ impl StreamsState {
         buf: &mut Vec<u8>,
         max_buf_size: usize,
         fair: bool,
+        now: Instant,
+        deadline_ctx: Option<StreamsDeadlineContext<'_>>,
+
     ) -> StreamMetaVec {
         let mut stream_frames = StreamMetaVec::new();
         while buf.len() + frame::Stream::SIZE_BOUND < max_buf_size {
@@ -712,7 +717,50 @@ impl StreamsState {
                 None => continue,
             };
 
+            let mut last_object_size: Option<u64> = None;
+            let mut should_reset = false;
 
+            {
+                if stream.is_reset() {
+                    should_reset = true;
+                } 
+                else if let Some(hints) = stream.object_sizes.as_mut() {
+                    if let Some(object) = hints.pop_last_object() {
+                        last_object_size = Some(object.total_len);
+                        let stream_deadline = stream.deadline;
+                        let deadline_ms = object.deadline.or(stream_deadline);
+                        if let Some(deadline_ms) = deadline_ms {
+                            let deadline = if deadline_ms == 0 {
+                                now + Duration::from_millis(3600)
+                            } else {
+                                now + Duration::from_millis(deadline_ms)
+                            };
+                            let allow = deadline_ctx.as_ref()
+                                    .map(|ctx| {
+                                        ctx.controller
+                                            .can_admit_object(last_object_size.unwrap_or(0), deadline, ctx.now, ctx.rtt)
+                                    })
+                                    .unwrap_or(true);
+                            if !allow {
+                                should_reset = true;
+                            }
+                        }
+                    }
+                }
+            }
+            if should_reset {
+                stream.reset();
+                    if should_reset {
+                    tracing::warn!(
+                    target="bbr.deadline",
+                    stream=?id,
+                    object_size=last_object_size,
+                    "resetting stream due to admission rejection"
+                    );
+                }
+                continue;
+            }
+            
             tracing::debug!(target="bbr.deadline", size = stream.pending.unacked(), object_size = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)), "writing_stream");
 
             // Reset streams aren't removed from the pending list and still exist while the peer

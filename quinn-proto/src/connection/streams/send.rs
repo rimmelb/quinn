@@ -6,9 +6,9 @@ use crate::{VarInt, connection::send_buffer::SendBuffer, frame};
 
 
 #[derive(Debug)]
-pub(super) struct ObjectSize {
+pub struct ObjectSize {
     pub total_len: u64,
-    deadline: Option<u64>
+    pub deadline: Option<u64>
 }
 
 #[derive(Debug)]

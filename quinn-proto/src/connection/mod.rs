@@ -9,6 +9,7 @@
 
 use bytes::{Bytes, BytesMut};
 use frame::StreamMetaVec;
+use streams::StreamsDeadlineContext;
 
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use thiserror::Error;
@@ -3452,10 +3453,18 @@ impl Connection {
 
         if space_id == SpaceId::Data {
 
+            let scheduler_ctx = StreamsDeadlineContext {
+                now,
+                rtt: self.path.rtt.get(),
+                controller: self.path.congestion.as_ref() as &dyn Controller,
+            };
+
             sent.stream_frames = self.streams.write_stream_frames(
                 buf,
                 max_size,
                 self.config.send_fairness,
+                now,
+                Some(scheduler_ctx),
             );
 
             self.stats.frame_tx.stream += sent.stream_frames.len() as u64;

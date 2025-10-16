@@ -26,6 +26,7 @@ pub use send::{FinishError, WriteError, Written};
 
 mod state;
 #[allow(unreachable_pub)] // fuzzing only
+pub(crate) use state::StreamsDeadlineContext;
 pub use state::StreamsState;
 
 /// Access to streams
