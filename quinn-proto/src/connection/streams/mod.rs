@@ -238,7 +238,9 @@ impl<'a> SendStream<'a> {
 
     fn write_source<B: BytesSource>(&mut self, source: &mut B) -> Result<Written, WriteError> {
         if self.conn_state.is_closed() {
-            trace!(%self.id, "write blocked; connection draining");
+            tracing::debug!(
+                target="bbr.deadline",
+                %self.id, "write blocked; connection draining");
             return Err(WriteError::Blocked);
         }
 
@@ -269,7 +271,9 @@ impl<'a> SendStream<'a> {
         let written = stream.write(source, limit)?;
         self.state.data_sent += written.bytes as u64;
         self.state.unacked_data += written.bytes as u64;
-        trace!(stream = %self.id, "wrote {} bytes", written.bytes);
+        tracing::debug!(
+            target="bbr.deadline",
+            stream = %self.id, "wrote {} bytes", written.bytes);
         if !was_pending {
             self.state.pending.push_pending(self.id, stream.priority, stream.deadline);
         }
