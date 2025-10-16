@@ -10,13 +10,13 @@ pub(super) struct SendBuffer {
     /// Data queued by the application but not yet acknowledged. May or may not have been sent.
     unacked_segments: VecDeque<Bytes>,
     /// Total size of `unacked_segments`
-    unacked_len: usize,
+    pub unacked_len: usize,
     /// The first offset that hasn't been written by the application, i.e. the offset past the end of `unacked`
     offset: u64,
     /// The first offset that hasn't been sent
     ///
     /// Always lies in (offset - unacked.len())..offset
-    unsent: u64,
+    pub unsent: u64,
     /// Acknowledged ranges which couldn't be discarded yet as they don't include the earliest
     /// offset in `unacked`
     // TODO: Recover storage from these by compacting (#700)

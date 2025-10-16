@@ -717,7 +717,11 @@ impl StreamsState {
                 None => continue,
             };
             
-            tracing::debug!(target="bbr.deadline", size = stream.pending.offset(), object_size = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)), "writing_stream");
+            tracing::debug!(target="bbr.deadline", 
+            offset_size = stream.pending.offset(),
+            unsent_size = stream.pending.unsent,
+            unacked_size = stream.pending.unacked_len,
+            object_size = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)), "writing_stream");
 
             // Reset streams aren't removed from the pending list and still exist while the peer
             // hasn't acknowledged the reset, but should not generate STREAM frames, so we need to
