@@ -13,7 +13,7 @@ pub struct ObjectSize {
 
 #[derive(Debug)]
 pub(super) struct StreamHints {
-    objects: VecDeque<ObjectSize>,
+    pub objects: VecDeque<ObjectSize>,
     bytes_written: u64
 }
 
