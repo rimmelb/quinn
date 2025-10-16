@@ -738,10 +738,12 @@ impl StreamsState {
             
             let mut offset = stream.pending.offset();
             let mut unacked_len = stream.pending.unacked_len;
+            let mut size_of_last_object = stream.pending.offset();
 
             if let Some(last_object_size) = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)) {
                 offset = offset + last_object_size;
                 unacked_len = unacked_len + last_object_size as usize;
+                size_of_last_object = last_object_size;
             }
 
 
@@ -827,8 +829,8 @@ impl StreamsState {
             }
         }
         else {
-            stream.pending.offset += last_object_size;
-            stream.pending.unacked_len += last_object_size as usize;
+            stream.pending.offset += size_of_last_object;
+            stream.pending.unacked_len += size_of_last_object as usize;
         }
         }
             
