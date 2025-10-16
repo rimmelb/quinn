@@ -137,7 +137,7 @@ impl Send {
             self.pending.write(chunk);
             }
             else {
-                self.pending.write_without_offset(data);
+                self.pending.write_without_offset(chunk);
             }
         }
 
