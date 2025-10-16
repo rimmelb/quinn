@@ -731,7 +731,7 @@ impl StreamsState {
             }
 
         if let Some(last_object_size) = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)) {
-            if stream.pending.offset() - stream.pending.unsent == last_object_size {
+            if stream.pending.offset() - stream.pending.unsent == last_object_size && stream.pending.unacked_len > 0 {
 
             // Ellenőrizzük, hogy van-e objektum, amit ki kell küldenünk
             let mut should_drop_object = false;
