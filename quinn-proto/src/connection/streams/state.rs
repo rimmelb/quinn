@@ -14,7 +14,7 @@ use super::{
     StreamHalf, ThinRetransmits,
 };
 use crate::{
-    coding::BufMutExt, congestion::{self, Controller}, connection::stats::FrameStats, frame::{self, FrameStruct, StreamMetaVec}, transport_parameters::TransportParameters, Dir, Side, StreamId, TransportError, VarInt, MAX_STREAM_COUNT
+    coding::BufMutExt, congestion::{self, Controller}, connection::{stats::FrameStats, streams}, frame::{self, FrameStruct, StreamMetaVec}, transport_parameters::TransportParameters, Dir, Side, StreamId, TransportError, VarInt, MAX_STREAM_COUNT
 };
 
 pub(crate) struct StreamsDeadlineContext<'a> {
@@ -729,11 +729,6 @@ impl StreamsState {
             if stream.is_reset() {
                 continue;
             }
-            // pub(super) fn write(&mut self, data: Bytes) {
-            //     self.unacked_len += data.len();
-            //     self.offset += data.len() as u64;
-            //     self.unacked_segments.push_back(data);
-            // }
 
             
             let mut offset = stream.pending.offset();
@@ -832,10 +827,12 @@ impl StreamsState {
             stream.pending.offset += size_of_last_object;
             stream.pending.unacked_len += size_of_last_object as usize;
         }
+
         }
             
             tracing::debug!(
-                target="bbr.deadline", 
+                target="bbr.deadline",
+                offset = stream.pending.offset(),
                 size = stream.pending.unacked(),
                 "writing_stream"
             );
