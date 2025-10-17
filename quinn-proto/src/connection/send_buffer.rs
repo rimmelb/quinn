@@ -171,6 +171,14 @@ impl SendBuffer {
             .min((max_len as u64).saturating_add(self.unsent));
         let result = self.unsent..end;
         self.unsent = end;
+
+        tracing::debug!(
+            target="bbr.deadline",
+            offset = self.offset,
+            unsent = self.unsent,
+            "poll transmit in send buffer",
+        );
+        
         (result, encode_length)
     }
 

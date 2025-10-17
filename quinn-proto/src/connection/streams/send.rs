@@ -119,7 +119,7 @@ impl Send {
         tracing::debug!(
             target="bbr.deadline",
             max_data = self.max_data,
-            offset = self.pending.offset(),
+            offset = self.pending.deferred_offset,
             budget = budget,
         );
 
