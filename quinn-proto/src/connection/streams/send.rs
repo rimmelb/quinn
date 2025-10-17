@@ -8,13 +8,14 @@ use crate::{VarInt, connection::send_buffer::SendBuffer, frame};
 #[derive(Debug)]
 pub struct ObjectSize {
     pub total_len: u64,
-    pub deadline: Option<u64>
+    pub deadline: Option<u64>,
+    pub dropped: bool
 }
 
 #[derive(Debug)]
 pub(super) struct StreamHints {
     pub objects: VecDeque<ObjectSize>,
-    bytes_written: u64
+    pub bytes_written: u64
 }
 
 impl StreamHints {
@@ -28,7 +29,8 @@ impl StreamHints {
 pub fn append_object_size(&mut self, object_size: u64, deadline: Option<u64>) {
         self.objects.push_back(ObjectSize {
             total_len: object_size,
-            deadline
+            deadline,
+            dropped: false
         });
     }
 
@@ -37,7 +39,9 @@ pub fn get_last_object(&mut self) -> Option<&ObjectSize> {
 }
 
 pub fn remove_last_object(&mut self) {
-    self.objects.pop_back();
+    if let Some(last_object) = self.objects.back_mut() {
+        last_object.dropped = true;
+    }
 }
 
 pub fn peek_last_object_size(&self) -> Option<u64> {

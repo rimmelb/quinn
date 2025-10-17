@@ -49,7 +49,6 @@ impl SendBuffer {
 
     pub(super) fn apply_deferred_offset(&mut self, object_size: u64) {
         if self.deferred_offset >= object_size {
-            self.deferred_offset -= object_size;
             self.offset += object_size;
         }
     }
@@ -92,12 +91,11 @@ impl SendBuffer {
 
     // truncate dropped objects
     pub(super) fn truncate(&mut self, bytes: u64) -> u64 {
-        let bytes_to_remove = bytes.min(self.deferred_offset);
+        let bytes_to_remove = bytes.min(bytes);
         if bytes_to_remove == 0 {
             return 0;
         }
-
-        self.deferred_offset -= bytes_to_remove;
+        
         let mut remaining = bytes_to_remove as usize;
         while remaining > 0 && !self.unacked_segments.is_empty() {
             let last_len = self.unacked_segments.back().unwrap().len();
