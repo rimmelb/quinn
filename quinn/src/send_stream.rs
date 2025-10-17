@@ -161,6 +161,10 @@ impl SendStream {
             Err(ClosedStream) => {
                 return Poll::Ready(Err(WriteError::ClosedStream));
             }
+            Err(Dropped) => {
+                conn.blocked_writers.insert(self.stream, cx.waker().clone());
+                return Poll::Pending;
+            }
         };
 
         conn.wake();
