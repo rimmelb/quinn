@@ -23,6 +23,8 @@ pub(super) struct SendBuffer {
     acks: RangeSet,
     /// Previously transmitted ranges deemed lost
     retransmits: RangeSet,
+    /// Dereffed offset
+    pub deferred_offset: u64
 }
 
 impl SendBuffer {
@@ -38,14 +40,18 @@ impl SendBuffer {
         self.unacked_segments.push_back(data);
     }
 
-    /// Append application data to the end of the stream
+    /// Append application data to the end of the stream without advancing the public offset
     pub(super) fn write_without_offset(&mut self, data: Bytes) {
+        self.deferred_offset += data.len() as u64;
         self.unacked_len += data.len();
         self.unacked_segments.push_back(data);
     }
 
-    pub(super) fn write_offset_unacked(&mut self, object_size: u64) {
-        self.offset += object_size;
+    pub(super) fn apply_deferred_offset(&mut self, object_size: u64) {
+        if self.deferred_offset >= object_size {
+            self.deferred_offset -= object_size;
+            self.offset += object_size;
+        }
     }
 
 
@@ -86,17 +92,16 @@ impl SendBuffer {
 
     // truncate dropped objects
     pub(super) fn truncate(&mut self, bytes: u64) -> u64 {
-        let unsent_data = self.offset - self.unsent;
-        let bytes_to_remove = bytes.min(unsent_data);
-        
+        let bytes_to_remove = bytes.min(self.deferred_offset);
         if bytes_to_remove == 0 {
             return 0;
         }
-        // Eltávolítjuk a szegmenseket hátulról
-        let mut remaining = bytes as usize;
+
+        self.deferred_offset -= bytes_to_remove;
+        let mut remaining = bytes_to_remove as usize;
         while remaining > 0 && !self.unacked_segments.is_empty() {
             let last_len = self.unacked_segments.back().unwrap().len();
-            
+
             if last_len <= remaining {
                 // Teljes szegmenst eltávolítunk
                 self.unacked_segments.pop_back();
@@ -109,7 +114,8 @@ impl SendBuffer {
                 remaining = 0;
             }
         } 
-        bytes
+        self.unacked_len = self.unacked_len.saturating_sub(bytes_to_remove as usize);
+        bytes_to_remove
     }
 
     /// Compute the next range to transmit on this stream and update state to account for that

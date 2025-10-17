@@ -732,7 +732,7 @@ impl StreamsState {
             if !offset_updated_last_cycle {
                 let total_lengths: Vec<u64> = hints.objects.iter().map(|object| object.total_len).collect();
                 let total_sum: u64 = total_lengths.iter().sum();
-
+        
                 if let Some(&last_object_size) = total_lengths.last() {
                     let expected_offset = total_sum - last_object_size;
                     if expected_offset != 0 && stream.pending.offset() != expected_offset {
@@ -747,7 +747,6 @@ impl StreamsState {
                 }
             }
             }
-
 
             // CSAK EGYSZER kérdezzük le az objektumot
             let last_object = stream.object_sizes.as_mut()
@@ -844,7 +843,7 @@ impl StreamsState {
 
             // Ha NEM dobtuk el, akkor frissítsük az offset-et és unacked_len-t
             if let Some((obj_size, _)) = last_object {
-                stream.pending.write_offset_unacked(obj_size);
+                stream.pending.apply_deferred_offset(obj_size);
                 offset_updated_last_cycle = true;
                 tracing::debug!(
                     target="bbr.deadline",
