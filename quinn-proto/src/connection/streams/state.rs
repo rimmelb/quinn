@@ -758,6 +758,13 @@ impl StreamsState {
         }
         }
 
+        // Reset streams aren't removed from the pending list and still exist while the peer
+            // hasn't acknowledged the reset, but should not generate STREAM frames, so we need to
+            // check for them explicitly.
+            if stream.is_reset() {
+                continue;
+            }
+
             // Now that we know the `StreamId`, we can better account for how many bytes
             // are required to encode it.
             let max_buf_size = max_buf_size - buf.len() - 1 - VarInt::size(id.into());
