@@ -162,8 +162,7 @@ impl SendStream {
                 return Poll::Ready(Err(WriteError::ClosedStream));
             }
             Err(Dropped) => {
-                conn.blocked_writers.insert(self.stream, cx.waker().clone());
-                return Poll::Pending;
+                return Poll::Ready(Err(WriteError::Dropped));
             }
         };
 
@@ -397,6 +396,9 @@ pub enum WriteError {
     /// Carries an application-defined error code.
     #[error("sending stopped by peer: error {0}")]
     Stopped(VarInt),
+    /// The transport controller dropped the current object before transmission
+    #[error("object dropped by transport admission control")]
+    Dropped,
     /// The connection was lost
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
@@ -435,6 +437,7 @@ impl From<WriteError> for io::Error {
         let kind = match x {
             Stopped(_) | ZeroRttRejected => io::ErrorKind::ConnectionReset,
             ConnectionLost(_) | ClosedStream => io::ErrorKind::NotConnected,
+            Dropped => io::ErrorKind::Other,
         };
         Self::new(kind, x)
     }
