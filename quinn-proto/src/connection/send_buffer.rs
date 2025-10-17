@@ -37,6 +37,7 @@ impl SendBuffer {
     pub(super) fn write(&mut self, data: Bytes) {
         self.unacked_len += data.len();
         self.offset += data.len() as u64;
+        self.deferred_offset += data.len() as u64;
         self.unacked_segments.push_back(data);
     }
 
@@ -95,7 +96,7 @@ impl SendBuffer {
         if bytes_to_remove == 0 {
             return 0;
         }
-        
+
         let mut remaining = bytes_to_remove as usize;
         while remaining > 0 && !self.unacked_segments.is_empty() {
             let last_len = self.unacked_segments.back().unwrap().len();
