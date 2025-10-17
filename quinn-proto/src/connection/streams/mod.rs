@@ -244,7 +244,7 @@ impl<'a> SendStream<'a> {
             return Err(WriteError::Blocked);
         }
 
-        let limit = self.state.write_limit();
+        let mut limit = self.state.write_limit();
 
         let max_send_data = self.state.max_send_data(self.id);
 
@@ -268,6 +268,13 @@ impl<'a> SendStream<'a> {
         }
 
         let was_pending = stream.is_pending();
+
+        if let Some(ref hints) = stream.object_sizes {
+            if let Some(last) = hints.peek_last_object_size() {
+                limit = last;
+            }
+        }
+
         let written = stream.write(source, limit)?;
         self.state.data_sent += written.bytes as u64;
         self.state.unacked_data += written.bytes as u64;

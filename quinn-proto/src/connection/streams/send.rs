@@ -158,6 +158,7 @@ impl Send {
         Ok(result)
     }
 
+
     /// Update stream state due to a reset sent by the local application
     pub(super) fn reset(&mut self) {
         use SendState::*;
