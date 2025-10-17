@@ -140,6 +140,10 @@ pub struct StreamsState {
 
     /// The shrink to be applied to local_max_data when receive_window is shrunk
     receive_window_shrink_debt: u64,
+
+    /// Stream-ek, amiket resetelni kell admission control elutasítás miatt
+    rejected_streams: Vec<(StreamId, VarInt)>,
+
 }
 
 impl StreamsState {
@@ -184,6 +188,7 @@ impl StreamsState {
             initial_max_stream_data_bidi_local: 0u32.into(),
             initial_max_stream_data_bidi_remote: 0u32.into(),
             receive_window_shrink_debt: 0,
+            rejected_streams: Vec::new(),
         };
 
         for dir in Dir::iter() {
@@ -750,7 +755,25 @@ impl StreamsState {
                             .unwrap_or(true);
                         
                         if !allow {
-                            stream.reset();
+
+                        // Visszaállítjuk az outstanding data-t
+                        let outstanding = stream.pending.unacked();
+                        self.unacked_data = self.unacked_data.saturating_sub(outstanding);
+                        
+                        // Connection blocked listából eltávolítás
+                        if stream.connection_blocked {
+                            if let Some(pos) = self.connection_blocked.iter()
+                                .position(|&sid| sid == id) {
+                                self.connection_blocked.swap_remove(pos);
+                            }
+                            stream.connection_blocked = false;
+                        }
+                        // Reseteljük
+                        stream.reset();
+                        
+                        // Elmentjük későbbi RESET_STREAM frame küldéshez
+                        const ADMISSION_CONTROL_ERROR: u32 = 0xDEAD;
+                        self.rejected_streams.push((id, VarInt::from_u32(ADMISSION_CONTROL_ERROR)));
                         }
                     }
                 }
@@ -758,12 +781,9 @@ impl StreamsState {
         }
         }
 
-        // Reset streams aren't removed from the pending list and still exist while the peer
-            // hasn't acknowledged the reset, but should not generate STREAM frames, so we need to
-            // check for them explicitly.
-            if stream.is_reset() {
-                continue;
-            }
+        if stream.is_reset() {
+            continue;
+        }
 
             // Now that we know the `StreamId`, we can better account for how many bytes
             // are required to encode it.
@@ -804,6 +824,20 @@ impl StreamsState {
         }
 
         stream_frames
+    }
+
+
+    /// Feldolgozza az elutasított stream-eket
+        pub(crate) fn process_rejected_streams(&mut self, pending: &mut Retransmits) {
+            for (stream_id, error_code) in self.rejected_streams.drain(..) {
+                tracing::debug!(
+                    target="bbr.deadline",
+                    stream=?stream_id,
+                    error_code=?error_code,
+                    "enqueuing RESET_STREAM for rejected stream"
+                );
+                pending.reset_stream.push((stream_id, error_code));
+        }
     }
 
     /// Notify the application that new streams were opened or a stream became readable.

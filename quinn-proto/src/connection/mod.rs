@@ -3465,10 +3465,12 @@ impl Connection {
                 self.config.send_fairness,
                 now,
                 Some(scheduler_ctx),
+                
             );
 
             self.stats.frame_tx.stream += sent.stream_frames.len() as u64;
         }
+        self.streams.process_rejected_streams(&mut self.spaces[SpaceId::Data].pending);
         sent
 }
 
