@@ -729,24 +729,9 @@ impl StreamsState {
             if stream.is_reset() {
                 continue;
             }
-            // pub(super) fn write(&mut self, data: Bytes) {
-            //     self.unacked_len += data.len();
-            //     self.offset += data.len() as u64;
-            //     self.unacked_segments.push_back(data);
-            // }
-
-            
-            let mut offset = stream.pending.offset();
-            let mut unacked_len = stream.pending.unacked_len;
-
-            if let Some(last_object_size) = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)) {
-                offset = offset + last_object_size;
-                unacked_len = unacked_len + last_object_size as usize;
-            }
-
 
         if let Some(last_object_size) = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)) {
-            if offset - stream.pending.unsent == last_object_size && unacked_len > 0 && last_object_size > 0 {
+            if stream.pending.offset - stream.pending.unsent == last_object_size && stream.pending.unacked_len > 0 && last_object_size > 0 {
 
             // Ellenőrizzük, hogy van-e objektum, amit ki kell küldenünk
             let mut should_drop_object = false;
@@ -784,59 +769,8 @@ impl StreamsState {
                     }
                 }
             }
-
-            // Ha el kell dobni az objektumot
-            if should_drop_object {
-                if let Some(obj_size) = last_object_size {
-                    // Használjuk a truncate() metódust az adatok eltávolítására
-                    let dropped_bytes = stream.pending.truncate(obj_size);
-                    
-                    if let Some(hints) = stream.object_sizes.as_mut() {
-                        hints.remove_last_object();
-                    }
-
-                    if dropped_bytes > 0 {
-                        // Frissítjük a globális unacked_data számlálót
-                        self.unacked_data = self.unacked_data.saturating_sub(dropped_bytes);
-                        
-                        tracing::debug!(
-                            target="bbr.deadline",
-                            stream=?id,
-                            dropped_bytes,
-                            remaining_unacked=stream.pending.unacked(),
-                            "dropped object data from send buffer"
-                        );
-                    }
-                }
-                
-                // FONTOS: Csak akkor tesszük vissza, ha VAN még pending adat vagy FIN
-                if stream.is_pending() {
-                    if fair {
-                        self.pending.push_pending(id, stream.priority, stream.deadline);
-                    } else {
-                        self.pending.reinsert_pending(id, stream.priority);
-                    }
-                } else {
-                    tracing::debug!(
-                        target="bbr.deadline",
-                        stream=?id,
-                        "stream has no more pending data after drop, not requeuing"
-                    );
-                }
-                continue;
-            }
-        }
-        else {
-            stream.pending.offset += last_object_size;
-            stream.pending.unacked_len += last_object_size as usize;
         }
         }
-            
-            tracing::debug!(
-                target="bbr.deadline", 
-                size = stream.pending.unacked(),
-                "writing_stream"
-            );
 
             // Now that we know the `StreamId`, we can better account for how many bytes
             // are required to encode it.
