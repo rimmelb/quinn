@@ -108,12 +108,6 @@ impl Send {
             return Err(WriteError::Stopped(error_code));
         }
         let budget = self.max_data - self.pending.offset();
-        tracing::debug!(
-            target="bbr.deadline",
-            max_data = self.max_data,
-            offset = self.pending.offset(),
-            budget = budget,
-        );
 
         if budget == 0 {
             return Err(WriteError::Blocked);
