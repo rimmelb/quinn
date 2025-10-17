@@ -115,7 +115,7 @@ impl Send {
         if let Some(error_code) = self.stop_reason {
             return Err(WriteError::Stopped(error_code));
         }
-        let budget = self.max_data - self.pending.offset();
+        let budget = self.max_data - self.pending.deferred_offset;
         tracing::debug!(
             target="bbr.deadline",
             max_data = self.max_data,
@@ -138,7 +138,6 @@ impl Send {
             if chunk.is_empty() {
                 break;
             }
-
             limit -= chunk.len();
             
             if let Some(hints) = self.object_sizes.as_ref() {

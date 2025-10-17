@@ -274,9 +274,11 @@ impl<'a> SendStream<'a> {
         tracing::debug!(
             target="bbr.deadline",
             stream = %self.id, "wrote {} bytes", written.bytes);
+
         if !was_pending {
             self.state.pending.push_pending(self.id, stream.priority, stream.deadline);
         }
+        
         Ok(written)
     }
 
