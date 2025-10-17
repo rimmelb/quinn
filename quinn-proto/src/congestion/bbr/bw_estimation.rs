@@ -85,11 +85,12 @@ impl BandwidthEstimation {
     }
 
     pub(crate) fn get_estimate(&self) -> u64 {
-        // FIX: ha van fix érték, azt használjuk alapként
-        if let Some(fixed) = self.fixed_bw_bytes_per_sec {
-            return fixed;
-        }
-        self.max_filter.get()
+    // Ha van fix érték, azt használjuk (akár 0 is lehet, de minimum 1-re korlátozva)
+    if let Some(fixed) = self.fixed_bw_bytes_per_sec {
+        return fixed.max(1); // Minimum 1 byte/s
+    }
+    // Különben a mért értéket
+    self.max_filter.get().max(1) // Minimum 1 byte/s
     }
 
     pub(crate) const fn bw_from_delta(bytes: u64, delta: Duration) -> Option<u64> {

@@ -759,7 +759,6 @@ impl StreamsState {
             }
         }
         }
-
             // Now that we know the `StreamId`, we can better account for how many bytes
             // are required to encode it.
             let max_buf_size = max_buf_size - buf.len() - 1 - VarInt::size(id.into());
