@@ -15,6 +15,9 @@ use crate::{
     frame,
 };
 
+use crate::congestion::Controller;
+use std::time::Duration;
+
 mod recv;
 use recv::Recv;
 pub use recv::{Chunks, ReadError, ReadableError};
@@ -200,6 +203,8 @@ pub struct SendStream<'a> {
     pub(super) state: &'a mut StreamsState,
     pub(super) pending: &'a mut Retransmits,
     pub(super) conn_state: &'a super::State,
+    pub(super) controller: Option<&'a dyn Controller>, // ÚJ
+    pub(super) rtt: Duration, // ÚJ
 }
 
 #[allow(clippy::needless_lifetimes)] // Needed for cfg(fuzzing)
@@ -265,6 +270,54 @@ impl<'a> SendStream<'a> {
                 self.state.connection_blocked.push(self.id);
             }
             return Err(WriteError::Blocked);
+        }
+
+        // ÚJ: Ellenőrizzük az objektum admission control-ját MIELŐTT beírnánk a bufferbe
+        if let Some(controller) = self.controller {
+            // JAVÍTÁS: stream.object_sizes már Option<StreamHints>, nem kell as_ref()
+            if let Some(hints) = stream.object_sizes.as_ref() {
+                // JAVÍTÁS: peek_last_object() immutable referenciát ad vissza
+                if let Some(last_object) = hints.peek_last_object() {
+                    // Az objektum mérete
+                    let object_size = last_object.total_len;
+                    let object_deadline_ms = last_object.deadline.or(stream.deadline);
+
+                    if let Some(deadline_ms) = object_deadline_ms {
+                        // Számítsuk ki az abszolút deadline-t
+                        let now = Instant::now(); // Vagy kapd meg paraméterként
+                        let deadline = if deadline_ms == 0 {
+                            now + Duration::from_millis(3600)
+                        } else {
+                            now + Duration::from_millis(deadline_ms)
+                        };
+                        
+                        // Hívjuk meg a controller metódusát
+                        let allow = controller.can_admit_object(
+                            object_size,
+                            deadline,
+                            now,
+                            self.rtt
+                        );
+                        
+                        if !allow {
+                            tracing::warn!(
+                                target="bbr.deadline",
+                                stream=?self.id,
+                                object_size,
+                                deadline_ms,
+                                "object rejected by admission control at write time"
+                            );
+                            
+                            // Távolítsuk el az objektum metaadatát
+                            // JAVÍTÁS: Itt már as_mut() kell, mert módosítjuk
+                            if let Some(hints) = stream.object_sizes.as_mut() {
+                                hints.remove_last_object();
+                            }
+                            return Err(WriteError::Dropped);
+                        }
+                    }
+                }
+            }
         }
 
         let was_pending = stream.is_pending();

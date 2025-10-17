@@ -437,6 +437,9 @@ impl Connection {
             state: &mut self.streams,
             pending: &mut self.spaces[SpaceId::Data].pending,
             conn_state: &self.state,
+            controller: Some(self.path.congestion.as_ref()),
+            rtt: self.path.rtt.get(),
+
         }
     }
 

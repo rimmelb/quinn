@@ -39,6 +39,11 @@ pub fn pop_last_object(&mut self) -> Option<&ObjectSize> {
 pub fn remove_last_object(&mut self) {
     self.objects.pop_back();
 }
+
+pub fn peek_last_object(&self) -> Option<&ObjectSize> {
+        self.objects.back()
+    }
+
 }
 
 #[derive(Debug)]
@@ -348,6 +353,8 @@ pub enum WriteError {
     /// The stream has not been opened or has already been finished or reset
     #[error("closed stream")]
     ClosedStream,
+    #[error("dropped object")]
+    Dropped
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
