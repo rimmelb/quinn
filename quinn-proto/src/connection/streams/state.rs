@@ -841,26 +841,49 @@ impl StreamsState {
                 continue;
             }
 
-            // Ha NEM dobtuk el, akkor frissítsük az offset-et és unacked_len-t
-            if let Some((obj_size, _)) = last_object {
-                stream.pending.apply_deferred_offset(obj_size);
-                tracing::debug!(
-                    target="bbr.deadline",
-                    stream=?id,
-                    added_object_size=obj_size,
-                    new_offset=stream.pending.offset(),
-                    new_unacked=stream.pending.unacked_len,
-                    "adjusted stream offset for object"
-                );
-            } 
-            else {
+        // Ha NEM dobtuk el, akkor frissítsük az offset-et és unacked_len-t
+        if let Some((obj_size, _)) = last_object {
+            // Csak akkor, ha ez tényleg új objektum (tehát az offset kisebb, mint a várható érték)
+            if let Some(hints) = stream.object_sizes.as_ref() {
+                // Összegyűjtjük az összes objektum méretét és a dropped állapotokat
+                let total_lengths: Vec<u64> = hints.objects.iter().map(|object| object.total_len).collect();
+                let dropped_sum: u64 = hints
+                    .objects
+                    .iter()
+                    .filter(|object| object.dropped)
+                    .map(|object| object.total_len)
+                    .sum();
+
+                // A deferred_offset-et nem módosítjuk, az a teljes összeg
+                let expected_offset = stream.pending.deferred_offset.saturating_sub(dropped_sum);
+
+                // Csak akkor frissítsük, ha valóban elmaradásban vagyunk
+                if stream.pending.offset() < expected_offset {
+                    stream.pending.offset = expected_offset;
+
+                    tracing::debug!(
+                        target="bbr.deadline",
+                        stream=?id,
+                        added_object_size=obj_size,
+                        expected_offset,
+                        dropped_sum,
+                        new_offset=stream.pending.offset(),
+                        new_unacked=stream.pending.unacked_len,
+                        "adjusted stream offset to deferred_offset minus dropped_sum"
+                    );
+                } else {
+                    tracing::trace!(
+                        target="bbr.deadline",
+                        stream=?id,
+                        offset=stream.pending.offset(),
+                        expected_offset,
+                        "offset already in sync with deferred_offset, skipping update"
+                    );
+                }
+                }
             }
-            tracing::debug!(
-                target="bbr.deadline",
-                offset = stream.pending.offset(),
-                size = stream.pending.unacked(),
-                "writing_stream"
-            );
+
+
 
             // Now that we know the `StreamId`, we can better account for how many bytes
             // are required to encode it.
