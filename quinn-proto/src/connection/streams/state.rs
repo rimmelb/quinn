@@ -727,8 +727,6 @@ impl StreamsState {
         if let Some(last_object_size) = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)) {
             if stream.pending.offset - stream.pending.unsent == last_object_size && stream.pending.unacked_len > 0 && last_object_size > 0 {
 
-            // Ellenőrizzük, hogy van-e objektum, amit ki kell küldenünk
-            let mut should_drop_object = false;
             let mut last_object_size: Option<u64> = None;
 
             if let Some(hints) = stream.object_sizes.as_mut() {
@@ -752,13 +750,14 @@ impl StreamsState {
                             .unwrap_or(true);
                         
                         if !allow {
-                            should_drop_object = true;
+                            stream.reset();
                         }
                     }
                 }
             }
         }
         }
+
             // Now that we know the `StreamId`, we can better account for how many bytes
             // are required to encode it.
             let max_buf_size = max_buf_size - buf.len() - 1 - VarInt::size(id.into());

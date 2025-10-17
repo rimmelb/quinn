@@ -161,30 +161,29 @@ impl Bbr {
     }
 
     #[inline]
-    fn deadline_decay_queue(&self, now: Instant, pps: f64, use_rtt: Duration) {
+    fn deadline_decay_queue(&self, now: Instant, pps: f64) {
         let mut st = self.deadline_state.lock().unwrap();
-        let last = st.last.unwrap_or(now);
+        
+        let Some(last) = st.last else {
+            return; // Első hívás, nincs mit decay-elni
+        };
+        
         let dt = now.saturating_duration_since(last).as_secs_f64();
         if dt <= 0.0 || pps <= 0.0 {
             return;
         }
 
-        // MAX: csak 1×BDP-nyi időt engedjünk egyszerre "elfolyni" (limitáljuk a burst érzékenységet)
-        let capped_dt = dt.min(use_rtt.as_secs_f64());
-
-        let q_before = st.q_pkts;
-        let decay = (pps * capped_dt).min(st.q_pkts * 0.5); // ne tűnhessen el >50% egy ciklusban
+        // Mennyi csomagot tudtunk volna elküldeni ez alatt az idő alatt?
+        let decay = (pps * dt).min(st.q_pkts); // Max: teljes queue
         st.q_pkts -= decay;
-
+        
         tracing::trace!(
             target: "bbr.deadline",
-            dt_ms = (dt*1000.0),
-            capped_dt_ms = (capped_dt*1000.0),
+            dt_ms = (dt * 1000.0),
             pps,
             decay,
-            q_before,
             q_after = st.q_pkts,
-            "virtual queue bounded decay"
+            "virtual queue decay"
         );
     }
 
@@ -715,106 +714,67 @@ fn can_admit_object(
         return true;
     };
 
-    let use_rtt = if self.min_rtt.as_nanos() != 0 { self.min_rtt } else { rtt_hint };
-    if use_rtt.as_nanos() == 0 { return true; }
-
-    let cwnd_bytes = self.window();
-    let bw_bytes_per_sec = self.max_bandwidth.get_estimate();
-    let pacing_bytes_per_sec = self.pacing_rate;
-
-    let cwnd_rate = (cwnd_bytes as f64 * 8.0) / use_rtt.as_secs_f64();
-    let app_rate  = (bw_bytes_per_sec as f64) * 8.0;
-    let pace_rate = (pacing_bytes_per_sec as f64) * 8.0;
-
-    let mut effective_bps = f64::INFINITY;
-    for r in [cwnd_rate, app_rate, pace_rate] {
-        if r > 0.0 { effective_bps = effective_bps.min(r); }
-    }
-    if !effective_bps.is_finite() || effective_bps <= 0.0 {
-        return true;
-    }
-
-    let mss = cfg.default_mss as f64;
-    if object_size <= (2 * cfg.default_mss) as u64 {
-        return true;
-    }
-
-    let pps: f64 = (effective_bps / 8.0 / mss * cfg.beta).max(1.0);
-
-    // Snapshot + bounded decay
-    let (snapshot_q, snapshot_last) = {
-        let st = self.deadline_state.lock().unwrap();
-        (st.q_pkts, st.last)
+    let use_rtt = if self.min_rtt.as_nanos() != 0 { 
+        self.min_rtt 
+    } else { 
+        rtt_hint 
     };
-    self.deadline_decay_queue(now, pps, use_rtt);
-    {
+    
+    if use_rtt.as_nanos() == 0 { 
+        return true; 
+    }
+
+    // Rate calculation
+    let pacing_bytes_per_sec = self.pacing_rate.max(1);
+    let mss = cfg.default_mss as f64;
+    let pps = (pacing_bytes_per_sec as f64 / mss).max(1.0);
+
+    // Decay virtual queue
+    self.deadline_decay_queue(now, pps);
+
+    // Get current queue state
+    let virt_q = {
+        let st = self.deadline_state.lock().unwrap();
+        st.q_pkts
+    };
+
+    // Calculate transmission time
+    let pkt_count = ((object_size + cfg.default_mss as u64 - 1) 
+                     / cfg.default_mss as u64) as f64;
+    
+    let queue_drain_time = Duration::from_secs_f64(virt_q / pps);
+    let object_send_time = Duration::from_secs_f64(pkt_count / pps);
+    let guard = Duration::from_millis(cfg.guard_ms);
+    
+    let total_time = queue_drain_time + object_send_time + guard;
+    let available_time = object_deadline.saturating_duration_since(now);
+    
+    let admit = total_time <= available_time;
+
+    // Update queue state
+    if admit {
         let mut st = self.deadline_state.lock().unwrap();
+        st.q_pkts += pkt_count;
         st.last = Some(now);
     }
 
-    let (virt_q_after_decay, last_seen) = {
-        let st = self.deadline_state.lock().unwrap();
-        (st.q_pkts, st.last)
-    };
-
-    let bdp_pkts = (cwnd_bytes as f64 / mss).max(1.0);
-    let q_cap = (bdp_pkts * 4.0).clamp(50.0, 10_000.0);
-    let is_stale = last_seen.map(|t| now.saturating_duration_since(t) > (use_rtt * 2)).unwrap_or(false);
-    let virt_q_sanitized = if is_stale && virt_q_after_decay > q_cap { q_cap } else { virt_q_after_decay.min(q_cap) };
-
-    let pkt_count = ((object_size + cfg.default_mss as u64 - 1) / cfg.default_mss as u64).max(1) as f64;
-
-    let trans_time = use_rtt / 2 + Duration::from_secs_f64((virt_q_sanitized + pkt_count) / pps);
-    let guard = Duration::from_millis(cfg.guard_ms);
-
-    let admit = now + trans_time + guard <= object_deadline;
-
     if !admit {
-        // rollback (but keep the decay effect so later streams see the reduced backlog)
-        let mut st = self.deadline_state.lock().unwrap();
-        st.q_pkts = virt_q_after_decay;
-        st.last = last_seen;
         tracing::debug!(
-            target="bbr.deadline", 
-            admit=false, 
-            reason="deadline_exceeded",
-            global_timeout=?self.delivery_timeout,
-            object_deadline=?object_deadline,
-            effective_deadline=?object_deadline,
-            needed_time_ms=((trans_time + guard).as_micros() as f64 / 1000.0),
-            virt_q_before=snapshot_q,
-            virt_q_after_decay=virt_q_after_decay,
-            pkt_count=pkt_count,
+            target="bbr.deadline",
             object_size,
-            use_rtt_ms=use_rtt.as_millis(),
-            guard_ms=cfg.guard_ms,
+            available_ms = available_time.as_millis(),
+            needed_ms = total_time.as_millis(),
+            queue_ms = queue_drain_time.as_millis(),
+            send_ms = object_send_time.as_millis(),
+            virt_q,
             pps,
-            effective_bps,
-            cwnd_bytes,
-            pacing_bytes_per_sec,
-            bw_bytes_per_sec
+            pacing_bps = pacing_bytes_per_sec * 8,
+            "object rejected"
         );
-        //TODO it should return false in this case, but for testing, we allow all
-        return true;
     }
 
-    // commit
-    {
-        let mut st = self.deadline_state.lock().unwrap();
-        st.q_pkts = (virt_q_sanitized + pkt_count).min(q_cap);
-    }
-    // tracing::debug!(
-    //     target="bbr.deadline", 
-    //     admit=true, 
-    //     global_timeout=?self.delivery_timeout,
-    //     object_deadline=?object_deadline,
-    //     effective_deadline=?effective_deadline,
-    //     virt_q_before=snapshot_q, 
-    //     virt_q_after=self.deadline_state.lock().unwrap().q_pkts
-    // );
-    true
+    admit
 }
-
     
     fn set_deadline(&mut self, deadline: Option<Instant>) {
             self.delivery_timeout = deadline
