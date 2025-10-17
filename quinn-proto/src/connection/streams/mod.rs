@@ -274,24 +274,20 @@ impl<'a> SendStream<'a> {
 
         // ÚJ: Ellenőrizzük az objektum admission control-ját MIELŐTT beírnánk a bufferbe
         if let Some(controller) = self.controller {
-            // JAVÍTÁS: stream.object_sizes már Option<StreamHints>, nem kell as_ref()
             if let Some(hints) = stream.object_sizes.as_ref() {
-                // JAVÍTÁS: peek_last_object() immutable referenciát ad vissza
                 if let Some(last_object) = hints.peek_last_object() {
                     // Az objektum mérete
                     let object_size = last_object.total_len;
                     let object_deadline_ms = last_object.deadline.or(stream.deadline);
 
                     if let Some(deadline_ms) = object_deadline_ms {
-                        // Számítsuk ki az abszolút deadline-t
-                        let now = Instant::now(); // Vagy kapd meg paraméterként
+                        let now = Instant::now();
                         let deadline = if deadline_ms == 0 {
                             now + Duration::from_millis(3600)
                         } else {
                             now + Duration::from_millis(deadline_ms)
                         };
                         
-                        // Hívjuk meg a controller metódusát
                         let allow = controller.can_admit_object(
                             object_size,
                             deadline,
@@ -308,6 +304,7 @@ impl<'a> SendStream<'a> {
                                 "object rejected by admission control at write time"
                             );
                             
+                            self.state.pending.remove(self.id);
                             // Távolítsuk el az objektum metaadatát
                             // JAVÍTÁS: Itt már as_mut() kell, mert módosítjuk
                             if let Some(hints) = stream.object_sizes.as_mut() {
