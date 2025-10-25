@@ -701,6 +701,10 @@ fn can_admit_object(
         rtt_hint
     };
     if use_rtt.as_nanos() == 0 {
+        tracing::debug!(
+            target = "bbr.deadline",
+            "rtt empty?"
+        );
         return true;
     }
 
