@@ -729,22 +729,6 @@ impl StreamsState {
                 continue;
             }
 
-            let last_object_size = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len));
-            let last_object_deadline = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.deadline));
-            let last_object_arrival = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.time_of_arrival));
-
-            tracing::debug!(
-                    target = "bbr.observation",
-                    stream.pending.offset,
-                    stream.pending.unsent,
-                    stream.pending.unacked_len,
-                    ?last_object_size,
-                    ?last_object_deadline,
-                    ?last_object_arrival,
-                    "object observation"
-            );
-
-
         if let Some(last_object_size) = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)) {
 
             if stream.pending.offset - stream.pending.unsent == last_object_size && stream.pending.unacked_len > 0 && last_object_size > 0 {
@@ -757,19 +741,6 @@ impl StreamsState {
                     
                     let stream_deadline = stream.deadline;
                     let deadline_ms = object.deadline.or(stream_deadline);
-                    let arrival_t = object.time_of_arrival;
-
-
-                    tracing::debug!(
-                    target = "bbr.observation",
-                    stream.pending.offset,
-                    stream.pending.unsent,
-                    stream.pending.unacked_len,
-                    ?last_object_size,
-                    ?deadline_ms,
-                    ?arrival_t,
-                    "object observation"
-                    );
                     
                     if let Some(deadline_ms) = deadline_ms {
                         if let Some(arrival_time) = object.time_of_arrival {
