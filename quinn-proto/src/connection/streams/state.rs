@@ -737,25 +737,19 @@ impl StreamsState {
             if let Some(hints) = stream.object_sizes.as_mut() {
                 if let Some(object) = hints.pop_last_object() {
                     last_object_size = Some(object.total_len);
+                    
                     let stream_deadline = stream.deadline;
                     let deadline_ms = object.deadline.or(stream_deadline);
                     
                     if let Some(deadline_ms) = deadline_ms {
-                        let deadline = if deadline_ms == 0 {
-                            now + Duration::from_millis(3600)
-                        } else {
-                            now + Duration::from_millis(deadline_ms)
-                        };
-                        
+                        if let Some(arrival_time) = object.time_of_arrival {
                         let allow = deadline_ctx.as_ref()
                             .map(|ctx| {
                                 ctx.controller
-                                    .can_admit_object(last_object_size.unwrap_or(0), deadline, ctx.now, ctx.rtt)
+                                    .can_admit_object(last_object_size.unwrap_or(0), deadline_ms, ctx.rtt, arrival_time)
                             })
                             .unwrap_or(true);
-                        
                         if !allow {
-
                         // Visszaállítjuk az outstanding data-t
                         let outstanding = stream.pending.unacked();
                         self.unacked_data = self.unacked_data.saturating_sub(outstanding);
@@ -775,6 +769,7 @@ impl StreamsState {
                         const ADMISSION_CONTROL_ERROR: u32 = 0xDEAD;
                         self.rejected_streams.push((id, VarInt::from_u32(ADMISSION_CONTROL_ERROR)));
                         }
+                    }
                     }
                 }
             }

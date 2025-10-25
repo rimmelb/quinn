@@ -91,14 +91,15 @@ impl Default for DeadlineConfig {
 #[derive(Debug, Clone)]
 struct DeadlineState {
     q_pkts: f64,
-    last: Option<Instant>,
+    last_ms: Option<u64>,
 }
 
 impl Default for DeadlineState {
     fn default() -> Self {
-         Self { q_pkts: 0.0, last: None }
-     }
- }
+        Self { q_pkts: 0.0, last_ms: None }
+    }
+}
+
 
 impl Bbr {
     /// Construct a state using the given `config` and current time `now`
@@ -160,32 +161,6 @@ impl Bbr {
         }
     }
 
-    #[inline]
-    fn deadline_decay_queue(&self, now: Instant, pps: f64) {
-        let mut st = self.deadline_state.lock().unwrap();
-        
-        let Some(last) = st.last else {
-            return; // Első hívás, nincs mit decay-elni
-        };
-        
-        let dt = now.saturating_duration_since(last).as_secs_f64();
-        if dt <= 0.0 || pps <= 0.0 {
-            return;
-        }
-
-        // Mennyi csomagot tudtunk volna elküldeni ez alatt az idő alatt?
-        let decay = (pps * dt).min(st.q_pkts); // Max: teljes queue
-        st.q_pkts -= decay;
-        
-        tracing::trace!(
-            target: "bbr.deadline",
-            dt_ms = (dt * 1000.0),
-            pps,
-            decay,
-            q_after = st.q_pkts,
-            "virtual queue decay"
-        );
-    }
 
     fn enter_startup_mode(&mut self) {
         self.mode = Mode::Startup;
@@ -698,7 +673,7 @@ impl Controller for Bbr {
         // Reset virtual queue when toggling to avoid stale backlog
         let mut st = self.deadline_state.lock().unwrap();
         st.q_pkts = 0.0;
-        st.last = None;
+        st.last_ms = None;
 
         tracing::info!(target: "bbr.deadline", enabled, "BBR deadline scheduler enabled flag updated");
     }
@@ -706,75 +681,69 @@ impl Controller for Bbr {
 fn can_admit_object(
     &self,
     object_size: u64,
-    object_deadline: Instant,
-    now: Instant,
+    object_deadline: u64,
     rtt_hint: Duration,
+    arrival_time: u64,
 ) -> bool {
     let Some(cfg) = self.deadline_config.as_ref().filter(|c| c.enabled) else {
         return true;
     };
 
-    let use_rtt = if self.min_rtt.as_nanos() != 0 { 
-        self.min_rtt 
-    } else { 
-        rtt_hint 
-    };
-    
-    if use_rtt.as_nanos() == 0 { 
-        return true; 
+    let now_ms = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .unwrap_or_default()
+    .as_millis() as u64;
+
+    let elapsed_ms = now_ms.saturating_sub(arrival_time);
+
+    if elapsed_ms > object_deadline {
+        tracing::debug!(
+            target = "bbr.deadline",
+            elapsed_ms,
+            timeout_ms = object_deadline,
+            "object dropped: exceeded delivery timeout"
+        );
+        return false;
     }
 
-    // Rate calculation
+    let remaining_timeout_ms = object_deadline.saturating_sub(elapsed_ms);
+
+    let use_rtt = if self.min_rtt.as_nanos() != 0 {
+        self.min_rtt
+    } else {
+        rtt_hint
+    };
+    if use_rtt.as_nanos() == 0 {
+        return true;
+    }
+
     let pacing_bytes_per_sec = self.pacing_rate.max(1);
     let mss = cfg.default_mss as f64;
     let pps = (pacing_bytes_per_sec as f64 / mss).max(1.0);
 
-    // Decay virtual queue
-    self.deadline_decay_queue(now, pps);
-
-    // Get current queue state
-    let virt_q = {
-        let st = self.deadline_state.lock().unwrap();
-        st.q_pkts
-    };
-
-    // Calculate transmission time
-    let pkt_count = ((object_size + cfg.default_mss as u64 - 1) 
+    let pkt_count = ((object_size + cfg.default_mss as u64 - 1)
                      / cfg.default_mss as u64) as f64;
-    
-    let queue_drain_time = Duration::from_secs_f64(virt_q / pps);
-    let object_send_time = Duration::from_secs_f64(pkt_count / pps);
-    let guard = Duration::from_millis(cfg.guard_ms);
-    
-    let total_time = queue_drain_time + object_send_time + guard;
-    let available_time = object_deadline.saturating_duration_since(now);
-    
-    let admit = total_time <= available_time;
+    let object_send_time_ms = (pkt_count / pps) * 1000.0;
+    let guard_ms = cfg.guard_ms as f64;
 
-    // Update queue state
-    if admit {
-        let mut st = self.deadline_state.lock().unwrap();
-        st.q_pkts += pkt_count;
-        st.last = Some(now);
-    }
+    let total_needed_ms = object_send_time_ms + guard_ms;
+    let admit = total_needed_ms <= remaining_timeout_ms as f64;
 
     if !admit {
         tracing::debug!(
-            target="bbr.deadline",
+            target = "bbr.deadline",
             object_size,
-            available_ms = available_time.as_millis(),
-            needed_ms = total_time.as_millis(),
-            queue_ms = queue_drain_time.as_millis(),
-            send_ms = object_send_time.as_millis(),
-            virt_q,
-            pps,
-            pacing_bps = pacing_bytes_per_sec * 8,
+            elapsed_ms,
+            available_ms = remaining_timeout_ms,
+            needed_ms = total_needed_ms,
             "object rejected"
         );
     }
 
     admit
 }
+
+
     
     fn set_deadline(&mut self, deadline: Option<Instant>) {
             self.delivery_timeout = deadline

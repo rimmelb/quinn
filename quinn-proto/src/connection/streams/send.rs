@@ -8,7 +8,8 @@ use crate::{VarInt, connection::send_buffer::SendBuffer, frame};
 #[derive(Debug)]
 pub struct ObjectSize {
     pub total_len: u64,
-    pub deadline: Option<u64>
+    pub deadline: Option<u64>,
+    pub time_of_arrival: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -25,10 +26,11 @@ impl StreamHints {
         }
     }
 
-pub fn append_object_size(&mut self, object_size: u64, deadline: Option<u64>) {
+pub fn append_object_size(&mut self, object_size: u64, deadline: Option<u64>, time_of_arrival: Option<u64>) {
         self.objects.push_back(ObjectSize {
             total_len: object_size,
-            deadline
+            deadline,
+            time_of_arrival
         });
     }
 
@@ -198,12 +200,12 @@ impl Send {
         self.priority_dirty = true;
     }
 
-    pub(super) fn append_object_size(&mut self, object_size: u64, deadline: Option<u64>) {
+    pub(super) fn append_object_size(&mut self, object_size: u64, deadline: Option<u64>, time_of_arrival: Option<u64>) {
         if self.object_sizes.is_none() {
             self.object_sizes = Some(StreamHints::new());
         }
         if let Some(hints) = &mut self.object_sizes {
-            hints.append_object_size(object_size, deadline);
+            hints.append_object_size(object_size, deadline, time_of_arrival);
         }
     }
 }

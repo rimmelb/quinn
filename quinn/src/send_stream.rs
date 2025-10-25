@@ -1,3 +1,4 @@
+use core::time;
 use std::{
     future::{Future, poll_fn},
     io,
@@ -243,10 +244,10 @@ impl SendStream {
     }
 
     // Receives and forwards object size and deadline to transport layer
-    pub fn append_object_size(&self, object_size: u64, deadline: Option<u64>) -> Result<(), ClosedStream> {
+    pub fn append_object_size(&self, object_size: u64, deadline: Option<u64>, time_of_arrival: Option<u64>) -> Result<(), ClosedStream> {
         let mut conn = self.conn.state.lock("SendStream::append_object_size");
         let mut s = conn.inner.send_stream(self.stream);
-        s.append_size(object_size, deadline);
+        s.append_size(object_size, deadline, time_of_arrival);
         Ok(())
     }
 

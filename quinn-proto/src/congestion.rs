@@ -88,9 +88,9 @@ pub trait Controller: Send + Sync {
     fn can_admit_object(
         &self,
         object_size: u64,
-        deadline: Instant,
-        now: Instant,
+        deadline: u64,
         rtt: Duration,
+        arrival_time: u64,
     ) -> bool {
         // Default implementation: always admit (backward compatibility)
         true

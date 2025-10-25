@@ -1,3 +1,4 @@
+use core::time;
 use std::{
     collections::{BinaryHeap, hash_map},
     io,
@@ -384,7 +385,7 @@ impl<'a> SendStream<'a> {
 
 
     //Object size received from application layer
-    pub fn append_size(&mut self, object_size: u64, deadline: Option<u64>) -> Result<(), ClosedStream> {
+    pub fn append_size(&mut self, object_size: u64, deadline: Option<u64>, time_of_arrival: Option<u64>) -> Result<(), ClosedStream> {
         let max_send_data = self.state.max_send_data(self.id);
         let stream = self
             .state
@@ -392,7 +393,7 @@ impl<'a> SendStream<'a> {
             .get_mut(&self.id)
             .map(get_or_insert_send(max_send_data))
             .ok_or(ClosedStream { _private: () })?;
-        stream.append_object_size(object_size, deadline);
+        stream.append_object_size(object_size, deadline, time_of_arrival);
         Ok(())
     }
 }

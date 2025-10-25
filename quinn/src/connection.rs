@@ -556,12 +556,12 @@ impl Connection {
     }
 
     // Use u64 and Option<Instant>, and return the bool result.
-    pub fn can_send_suggestion(&self, object_size: u64, deadline: Option<Instant>, now: Instant) -> bool {
+    pub fn can_send_suggestion(&self, object_size: u64, deadline: u64, now: Instant, arrival_time: u64) -> bool {
         self.0
             .state
             .lock("can_send_suggestion")
             .inner
-            .can_send_object(object_size, deadline, now)
+            .can_send_object(object_size, deadline, arrival_time)
     }
 
     // Optional: add a matching wrapper for the priority suggestion

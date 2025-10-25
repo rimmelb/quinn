@@ -3835,13 +3835,12 @@ impl Connection {
     /// New: deadline-aware object admission
     pub fn can_send_object(&self,
         object_size: u64,
-        deadline: Option<Instant>,
-        now: Instant  // FIX: Add now parameter instead of self.timers.now()
+        deadline: u64,
+        arrival_time: u64
     ) -> bool {
-        let Some(deadline) = deadline else { return true; };
         let rtt = self.path.rtt.get();
 
-        self.path.congestion.can_admit_object(object_size, deadline, now, rtt)
+        self.path.congestion.can_admit_object(object_size, deadline, rtt, arrival_time)
     }
 
     ///New: alter fix bandwidth
