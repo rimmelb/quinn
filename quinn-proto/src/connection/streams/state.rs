@@ -729,8 +729,24 @@ impl StreamsState {
                 continue;
             }
 
+            let last_object_size = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len));
+            let last_object_deadline = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.deadline));
+            let last_object_arrival = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.time_of_arrival));
+
+            tracing::debug!(
+                    target = "bbr.deadline",
+                    stream.pending.offset,
+                    stream.pending.unsent,
+                    stream.pending.unacked_len,
+                    ?last_object_size,
+                    ?last_object_deadline,
+                    ?last_object_arrival,
+                    "object observation"
+            );
+
 
         if let Some(last_object_size) = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.total_len)) {
+
             if stream.pending.offset - stream.pending.unsent == last_object_size && stream.pending.unacked_len > 0 && last_object_size > 0 {
 
             let mut last_object_size: Option<u64> = None;
