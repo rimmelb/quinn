@@ -734,7 +734,7 @@ impl StreamsState {
             let last_object_arrival = stream.object_sizes.as_mut().and_then(|hints| hints.pop_last_object().map(|obj| obj.time_of_arrival));
 
             tracing::debug!(
-                    target = "bbr.deadline",
+                    target = "bbr.observation",
                     stream.pending.offset,
                     stream.pending.unsent,
                     stream.pending.unacked_len,
@@ -761,7 +761,7 @@ impl StreamsState {
 
 
                     tracing::debug!(
-                    target = "bbr.deadline",
+                    target = "bbr.observation",
                     stream.pending.offset,
                     stream.pending.unsent,
                     stream.pending.unacked_len,
@@ -795,9 +795,9 @@ impl StreamsState {
                         // Reseteljük
                         stream.reset();
                         
-                        // Elmentjük későbbi RESET_STREAM frame küldéshez
-                        const ADMISSION_CONTROL_ERROR: u32 = 0xDEAD;
-                        self.rejected_streams.push((id, VarInt::from_u32(ADMISSION_CONTROL_ERROR)));
+                        // // Elmentjük későbbi RESET_STREAM frame küldéshez
+                        // const ADMISSION_CONTROL_ERROR: u32 = 0xDEAD;
+                        // self.rejected_streams.push((id, VarInt::from_u32(ADMISSION_CONTROL_ERROR)));
                         }
                     }
                     }
