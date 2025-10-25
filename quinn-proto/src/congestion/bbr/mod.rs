@@ -528,28 +528,15 @@ impl Controller for Bbr {
             Some(mbps) => {
                 // Mbps -> B/s
                 let bps_bits = (mbps as u64) * 1_000_000;
-                let bytes_per_sec = (bps_bits / 8).max(1); // Minimum 1 byte/s
+                let bytes_per_sec = (bps_bits / 8).max(1);
                 
                 self.max_bandwidth.set_fix_bandwidth(Some(bytes_per_sec));
                 
                 // Azonnali pacing frissítés
                 self.pacing_rate = ((bytes_per_sec as f64 * self.pacing_gain as f64) as u64).max(1);
-                
-                tracing::info!(
-                    target="bbr.deadline",
-                    mbps,
-                    bytes_per_sec,
-                    pacing_rate = self.pacing_rate,
-                    "fixed bandwidth set"
-                );
                 true
             }
             None => {
-                tracing::info!(
-                    target="bbr.deadline",
-                    "fixed bandwidth cleared, reverting to dynamic BBR"
-                );
-                
                 self.max_bandwidth.set_fix_bandwidth(None);
                 // Következő ciklus számolja újra
                 self.pacing_rate = 0;
@@ -728,6 +715,19 @@ fn can_admit_object(
 
     let total_needed_ms = object_send_time_ms + guard_ms;
     let admit = total_needed_ms <= remaining_timeout_ms as f64;
+
+
+    if admit {
+        tracing::debug!(
+            target = "bbr.deadline",
+            object_size,
+            elapsed_ms,
+            available_ms = remaining_timeout_ms,
+            needed_ms = total_needed_ms,
+            "object accepted"
+        );
+
+    }
 
     if !admit {
         tracing::debug!(
