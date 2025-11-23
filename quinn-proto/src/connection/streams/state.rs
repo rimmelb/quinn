@@ -596,8 +596,7 @@ impl StreamsState {
                 if let Some(object) = hints.pop_last_object() {
                     let last_object_size = Some(object.total_len);
                     
-                    let stream_deadline = stream.deadline;
-                    let deadline_ms = object.deadline.or(stream_deadline);
+                    let deadline_ms = object.deadline;
                     
                     if let Some(deadline_ms) = deadline_ms {
                         if let Some(arrival_time) = object.time_of_arrival {
