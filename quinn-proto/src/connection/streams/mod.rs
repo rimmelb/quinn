@@ -1,8 +1,6 @@
-use core::time;
 use std::{
     collections::{BinaryHeap, hash_map},
-    io,
-    time::Instant,
+    io
 };
 
 use bytes::Bytes;
@@ -28,7 +26,7 @@ pub use send::{FinishError, WriteError, Written};
 mod state;
 #[allow(unreachable_pub)] // fuzzing only
 pub(crate) use state::StreamsDeadlineContext;
-pub use state::StreamsState;
+pub(crate) use state::StreamsState;
 
 /// Access to streams
 pub struct Streams<'a> {
@@ -384,7 +382,7 @@ impl<'a> SendStream<'a> {
     }
 
 
-    //Object size received from application layer
+    /// Append object size metadata to the send stream
     pub fn append_size(&mut self, object_size: u64, deadline: Option<u64>, time_of_arrival: Option<u64>) -> Result<(), ClosedStream> {
         let max_send_data = self.state.max_send_data(self.id);
         let stream = self
@@ -449,34 +447,6 @@ impl PendingStreamsQueue {
     fn clear(&mut self) {
         self.next = None;
         self.streams.clear();
-    }
-
-    /// Eltávolít egy stream-et a queue-ból ID alapján
-    /// 
-    /// Visszaadja `true`-t, ha a stream megtalálható volt és el lett távolítva
-    pub(super) fn remove(&mut self, id: StreamId) -> bool {
-        // 1. Ellenőrizzük a `next` field-et (az aktívan kiválasztott stream)
-        if let Some(ref next) = self.next {
-            if next.id == id {
-                self.next = None;
-                return true;
-            }
-        }
-
-        // 2. Eltávolítjuk a BinaryHeap-ből
-        // Sajnos a BinaryHeap nem támogatja a közvetlen eltávolítást,
-        // így újra kell építenünk az egész heap-et
-        let original_len = self.streams.len();
-        let streams_vec: Vec<_> = self.streams.drain().filter(|s| s.id != id).collect();
-        self.streams = BinaryHeap::from(streams_vec);
-        
-        // Ha változott a méret, akkor sikeres volt az eltávolítás
-        original_len != self.streams.len()
-    }
-
-    // NEW: needed by StreamsState::normalize_pending()
-    fn is_empty(&self) -> bool {
-        self.next.is_none() && self.streams.is_empty()
     }
 
     fn iter(&self) -> impl Iterator<Item = &PendingStream> {

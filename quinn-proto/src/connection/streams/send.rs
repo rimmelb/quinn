@@ -6,7 +6,7 @@ use crate::{VarInt, connection::send_buffer::SendBuffer, frame};
 
 
 #[derive(Debug)]
-pub struct ObjectSize {
+pub(super) struct ObjectSize {
     pub total_len: u64,
     pub deadline: Option<u64>,
     pub time_of_arrival: Option<u64>,
@@ -15,18 +15,16 @@ pub struct ObjectSize {
 #[derive(Debug)]
 pub(super) struct StreamHints {
     objects: VecDeque<ObjectSize>,
-    bytes_written: u64
 }
 
 impl StreamHints {
     pub(super) fn new() -> Self {
         Self {
-            objects: VecDeque::new(),
-            bytes_written: 0
+            objects: VecDeque::new()
         }
     }
 
-pub fn append_object_size(&mut self, object_size: u64, deadline: Option<u64>, time_of_arrival: Option<u64>) {
+pub(super) fn append_object_size(&mut self, object_size: u64, deadline: Option<u64>, time_of_arrival: Option<u64>) {
         self.objects.push_back(ObjectSize {
             total_len: object_size,
             deadline,
@@ -34,12 +32,8 @@ pub fn append_object_size(&mut self, object_size: u64, deadline: Option<u64>, ti
         });
     }
 
-pub fn pop_last_object(&mut self) -> Option<&ObjectSize> {
+pub(super) fn pop_last_object(&mut self) -> Option<&ObjectSize> {
         self.objects.back()
-}
-
-pub fn remove_last_object(&mut self) {
-    self.objects.pop_back();
 }
 }
 

@@ -70,7 +70,7 @@ pub struct Bbr {
 }
 
 #[derive(Debug, Clone)]
-pub struct DeadlineConfig {
+pub(super) struct DeadlineConfig {
     pub enabled: bool,
     pub beta: f64,       // Conservative factor for pps estimation
     pub guard_ms: u64,   // Guard time for jitter
@@ -753,30 +753,38 @@ impl BbrConfig {
         self
     }
 
+    /// Enable or disable deadline-aware scheduling for streams
     pub fn enable_deadline_scheduler(mut self, enabled: bool) -> Self {
         let mut d = self.deadline.unwrap_or_default();
         d.enabled = enabled;
         self.deadline = Some(d);
         self
     }
+
+    /// Set the guard time in milliseconds for admission control
     pub fn guard_ms(mut self, ms: u64) -> Self {
         let mut d = self.deadline.unwrap_or_default();
         d.guard_ms = ms;
         self.deadline = Some(d);
         self
     }
+
+    /// Set the beta parameter for admission control
     pub fn beta(mut self, beta: f64) -> Self {
         let mut d = self.deadline.unwrap_or_default();
         d.beta = beta;
         self.deadline = Some(d);
         self
     }
+
+    /// Set the default maximum segment size (MSS)
     pub fn default_mss(mut self, mss: u32) -> Self {
         let mut d = self.deadline.unwrap_or_default();
         d.default_mss = mss;
         self.deadline = Some(d);
         self
     }
+    
 }
 
 impl Default for BbrConfig {

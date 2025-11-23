@@ -1,6 +1,6 @@
 ﻿use std::{
     cmp,
-    collections::{HashSet, VecDeque},
+    collections::{VecDeque},
     convert::TryFrom,
     fmt, io, mem,
     net::{IpAddr, SocketAddr},
@@ -536,7 +536,7 @@ impl Connection {
                 segment_size.saturating_sub(self.predict_1rtt_overhead(Some(pn)));
 
             // Is there data or a close message to send in this space?
-            let mut can_send = self.space_can_send(space_id, frame_space_1rtt);
+            let can_send = self.space_can_send(space_id, frame_space_1rtt);
             if can_send.is_empty() && (!close || self.spaces[space_id].crypto.is_none()) {
                 space_idx += 1;
                 continue;
@@ -3856,6 +3856,7 @@ impl Connection {
         self.path.congestion.set_deadline(deadline)
     }
 
+    /// Enable or disable deadline-aware admission control
     pub fn enable_deadline_scheduler(&mut self,
         deadline_scheduler: bool,
     )

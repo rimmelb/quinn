@@ -87,29 +87,30 @@ pub trait Controller: Send + Sync {
     /// New: deadline-aware admission control
     fn can_admit_object(
         &self,
-        object_size: u64,
-        deadline: u64,
-        rtt: Duration,
-        arrival_time: u64,
+        _object_size: u64,
+        _deadline: u64,
+        _rtt: Duration,
+        _arrival_time: u64,
     ) -> bool {
         // Default implementation: always admit (backward compatibility)
         true
     }
 
-    //altering fix bandwidth
-    fn alter_fix_bandwidth(&mut self, bandwidth: Option<u32>) -> bool {
+    /// Override the bandwidth estimate with a fixed value (for testing/debugging)
+    fn alter_fix_bandwidth(&mut self, _bandwidth: Option<u32>) -> bool {
         false
     }
 
-    /// New: suggest priority based on deadline + current network state
+    ///suggest priority based on deadline + current network state
     fn set_deadline(
         &mut self,
-        deadline: Option<Instant>,
+        _deadline: Option<Instant>,
     ) 
     {
     }
 
-    fn set_deadline_scheduler(&mut self, deadline_scheduler: bool) {       
+    ///enable or disable deadline scheduler
+    fn set_deadline_scheduler(&mut self, _deadline_scheduler: bool) {       
     }
 
 }

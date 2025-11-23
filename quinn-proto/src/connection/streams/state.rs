@@ -14,9 +14,10 @@ use super::{
     StreamHalf, ThinRetransmits,
 };
 use crate::{
-    coding::BufMutExt, congestion::{self, Controller}, connection::stats::FrameStats, frame::{self, FrameStruct, StreamMetaVec}, transport_parameters::TransportParameters, Dir, Side, StreamId, TransportError, VarInt, MAX_STREAM_COUNT
+    coding::BufMutExt, congestion::Controller, connection::stats::FrameStats, frame::{self, FrameStruct, StreamMetaVec}, transport_parameters::TransportParameters, Dir, Side, StreamId, TransportError, VarInt, MAX_STREAM_COUNT
 };
 
+#[allow(dead_code)]
 pub(crate) struct StreamsDeadlineContext<'a> {
     pub now: Instant,
     pub rtt: Duration,
@@ -228,134 +229,6 @@ impl StreamsState {
         self.max_remote[dir as usize] += new_count;
     }
 
-    /// Előszűri a pending stream-eket deadline alapján
-    /// 
-    /// Visszaadja azoknak a stream-eknek az ID-jét, amik átmennek az admission control-on
-    // ...existing code...
-    pub(crate) fn filter_pending_by_deadline<F>(
-        &mut self,
-        now: Instant,
-        mut can_admit: F,
-    ) -> std::collections::HashSet<StreamId>
-    where
-        F: FnMut(StreamId, Instant, u64) -> bool,
-    {
-        use std::collections::HashSet;
-        let mut admitted = HashSet::new();
-        // Gyűjtsük az ID + entry deadline párokat, hogy hozzáférjünk a queue-ban tárolt deadline-hoz is
-        let pending_entries: Vec<_> = self
-            .pending
-            .iter()
-            .map(|e| (e.id, e.deadline))
-            .collect();
-
-        let mut to_prune = Vec::new();
-
-        for (stream_id, entry_deadline) in pending_entries {
-            let send = match self.send.get(&stream_id) {
-                Some(Some(s)) => s,
-                _ => {
-                    to_prune.push(stream_id);
-                    continue;
-                }
-            };
-
-            let pending_bytes = send.pending.unacked();
-            let fin_pending = send.fin_pending;
-            if pending_bytes == 0 && !fin_pending {
-                to_prune.push(stream_id);
-                continue;
-            }
-
-            let object_size = if pending_bytes == 0 { 1 } else { pending_bytes };
-
-            let mut deadline= Instant::now();
-
-            if let Some(timeout) = send.deadline {
-                deadline = deadline + std::time::Duration::from_millis(timeout);
-            }
-
-            if let Some(timeout) = send.deadline {
-                if timeout == 0 {
-                    deadline = now + std::time::Duration::from_millis(3600);
-                }
-            }
-
-            if can_admit(stream_id, deadline, object_size) {
-                admitted.insert(stream_id);
-            } else {
-                tracing::debug!(
-                    target="bbr.deadline",
-                    stream_id=?stream_id,
-                    pending_bytes,
-                    fin_pending,
-                    object_size,
-                    deadline=?deadline,
-                    "admission_reject"
-                );
-            }
-        }
-
-        for id in to_prune {
-            self.pending.remove(id);
-        }
-
-        admitted
-    }
-
-
-        pub(crate) fn abort_pending_stream(
-        &mut self,
-        id: StreamId,
-        error_code: VarInt,
-        pending: &mut Retransmits,
-    ) -> bool {
-        let Some(entry) = self.send.get_mut(&id) else {
-            self.pending.remove(id);
-            return false;
-        };
-        let Some(send) = entry.as_mut() else {
-            self.pending.remove(id);
-            return false;
-        };
-        if matches!(send.state, SendState::ResetSent) {
-            self.pending.remove(id);
-            return false;
-        }
-
-        let outstanding = send.pending.unacked();
-        self.unacked_data = self.unacked_data.saturating_sub(outstanding);
-        if send.connection_blocked {
-            if let Some(pos) = self.connection_blocked.iter().position(|&sid| sid == id) {
-                self.connection_blocked.swap_remove(pos);
-            }
-            send.connection_blocked = false;
-        }
-
-        send.reset();
-        self.pending.remove(id);
-        pending.reset_stream.push((id, error_code));
-        true
-    }
-
-    pub(crate) fn iter_pending_with_bytes(&self) -> impl Iterator<Item=(StreamId,u64)> + '_ {
-        self.pending.iter().filter_map(|e| {
-            self.send.get(&e.id)
-                .and_then(|s| s.as_ref())
-                .map(|snd| {
-                    let pending_bytes = snd.pending.unacked();
-                    let fin_pending = snd.fin_pending;
-                    let object_size = if pending_bytes == 0 && fin_pending {
-                        1
-                    } else {
-                        pending_bytes
-                    };
-                    (e.id, object_size)
-                })
-                .filter(|(_, size)| *size > 0)
-        })
-    }
-
     pub(crate) fn zero_rtt_rejected(&mut self) {
         // Revert to initial state for outgoing streams
         for dir in Dir::iter() {
@@ -431,20 +304,6 @@ impl StreamsState {
 
         // We don't buffer data on stopped streams, so issue flow control credit immediately
         Ok(self.add_read_credits(new_bytes))
-    }
-
-    fn normalize_pending(&mut self) {
-        // Gyors út: ha nincs pending, nincs teendő
-        if self.pending.is_empty() { return; }
-
-        // Kigyűjtjük a jelenlegi pending streameket, majd újratöltjük aktuális priority-vel
-        let ids: Vec<_> = self.pending.iter().map(|p| p.id).collect();
-        self.pending.clear();
-        for id in ids {
-            if let Some(Some(s)) = self.send.get(&id) {
-                self.pending.push_pending(id, s.priority, s.deadline);
-            }
-        }
     }
 
     /// Process incoming RESET_STREAM frame
@@ -695,7 +554,7 @@ impl StreamsState {
         buf: &mut Vec<u8>,
         max_buf_size: usize,
         fair: bool,
-        now: Instant,
+        _now: Instant,
         deadline_ctx: Option<StreamsDeadlineContext<'_>>,
 
     ) -> StreamMetaVec {
@@ -733,11 +592,9 @@ impl StreamsState {
 
             if stream.pending.offset - stream.pending.unsent == last_object_size && stream.pending.unacked_len > 0 && last_object_size > 0 {
 
-            let mut last_object_size: Option<u64> = None;
-
             if let Some(hints) = stream.object_sizes.as_mut() {
                 if let Some(object) = hints.pop_last_object() {
-                    last_object_size = Some(object.total_len);
+                    let last_object_size = Some(object.total_len);
                     
                     let stream_deadline = stream.deadline;
                     let deadline_ms = object.deadline.or(stream_deadline);

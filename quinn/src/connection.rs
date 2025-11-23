@@ -555,8 +555,8 @@ impl Connection {
         .alter_fix_bandwidth(bandwidth)
     }
 
-    // Use u64 and Option<Instant>, and return the bool result.
-    pub fn can_send_suggestion(&self, object_size: u64, deadline: u64, now: Instant, arrival_time: u64) -> bool {
+    /// Check if an object can be admitted for sending based on deadline constraints
+    pub fn can_send_suggestion(&self, object_size: u64, deadline: u64, _now: Instant, arrival_time: u64) -> bool {
         self.0
             .state
             .lock("can_send_suggestion")
@@ -564,8 +564,9 @@ impl Connection {
             .can_send_object(object_size, deadline, arrival_time)
     }
 
-    // Optional: add a matching wrapper for the priority suggestion
-    pub fn set_deadline(&self, object_size: u64, deadline: Option<Instant>, now: Instant) {
+
+    /// Set a deadline for the connection's data transmission
+    pub fn set_deadline(&self, _object_size: u64, deadline: Option<Instant>, _now: Instant) {
         self.0
             .state
             .lock("suggest_object_priority")
@@ -574,6 +575,7 @@ impl Connection {
     }
 
 
+    /// Enable or disable deadline-aware scheduling
     pub fn set_deadline_scheduler(&self, deadline_scheduler: bool) {
         self.0
             .state

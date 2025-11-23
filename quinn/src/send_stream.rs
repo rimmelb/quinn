@@ -1,4 +1,3 @@
-use core::time;
 use std::{
     future::{Future, poll_fn},
     io,
@@ -14,7 +13,6 @@ use crate::{
     VarInt,
     connection::{ConnectionRef, State},
 };
-use std::time::Instant;
 
 /// A stream that can only be used to send data
 ///
@@ -239,15 +237,15 @@ impl SendStream {
         // Nem minden implementációban elérhető – belső downcast
         let mut s = conn.inner.send_stream(self.stream);
         // Ha a proto réteg nem tartalmazza a metódust (régebbi fork), a build úgyis elbukna.
-        s.set_deadline(deadline);
+        let _ = s.set_deadline(deadline);
         Ok(())
     }
 
-    // Receives and forwards object size and deadline to transport layer
+    /// Append object size metadata to the send stream
     pub fn append_object_size(&self, object_size: u64, deadline: Option<u64>, time_of_arrival: Option<u64>) -> Result<(), ClosedStream> {
         let mut conn = self.conn.state.lock("SendStream::append_object_size");
         let mut s = conn.inner.send_stream(self.stream);
-        s.append_size(object_size, deadline, time_of_arrival);
+        let _ = s.append_size(object_size, deadline, time_of_arrival);
         Ok(())
     }
 
