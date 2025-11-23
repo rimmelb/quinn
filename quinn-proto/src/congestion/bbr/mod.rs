@@ -504,17 +504,14 @@ impl Controller for Bbr {
     fn alter_fix_bandwidth(&mut self, bandwidth: Option<u32>) -> bool {
         match bandwidth {
             Some(0) => {
-                // 0 Mbps = minimális sebesség (gyakorlatilag megállítás)
                 tracing::warn!(
                     target="bbr.deadline",
                     "bandwidth set to 0 Mbps, setting minimum (1 byte/s)"
                 );
                 
                 // Állítsuk 1 byte/sec-re (minimum érték)
-                self.max_bandwidth.set_fix_bandwidth(Some(1));
                 self.pacing_rate = 1;
                 
-                // Csökkentsük a cwnd-t is minimumra
                 self.cwnd = self.min_cwnd;
                 
                 tracing::info!(
@@ -526,19 +523,16 @@ impl Controller for Bbr {
                 true
             }
             Some(mbps) => {
-                // Mbps -> B/s
                 let bps_bits = (mbps as u64) * 1_000_000;
                 let bytes_per_sec = (bps_bits / 8).max(1);
                 
                 self.max_bandwidth.set_fix_bandwidth(Some(bytes_per_sec));
                 
-                // Azonnali pacing frissítés
-                self.pacing_rate = ((bytes_per_sec as f64 * self.pacing_gain as f64) as u64).max(1);
+                self.pacing_rate = ((bytes_per_sec as f64) as u64).max(1);
                 true
             }
             None => {
                 self.max_bandwidth.set_fix_bandwidth(None);
-                // Következő ciklus számolja újra
                 self.pacing_rate = 0;
                 true
             }
@@ -669,7 +663,7 @@ fn can_admit_object(
     &self,
     object_size: u64,
     object_deadline: u64,
-    rtt_hint: Duration,
+    _rtt_hint: Duration,
     arrival_time: u64,
 ) -> bool {
     let Some(cfg) = self.deadline_config.as_ref().filter(|c| c.enabled) else {
@@ -694,19 +688,6 @@ fn can_admit_object(
     }
 
     let remaining_timeout_ms = object_deadline.saturating_sub(elapsed_ms);
-
-    let use_rtt = if self.min_rtt.as_nanos() != 0 {
-        self.min_rtt
-    } else {
-        rtt_hint
-    };
-    if use_rtt.as_nanos() == 0 {
-        tracing::debug!(
-            target = "bbr.deadline",
-            "rtt empty?"
-        );
-        return true;
-    }
 
     let pacing_bytes_per_sec = self.pacing_rate.max(1);
     let mss = cfg.default_mss as f64;
