@@ -342,30 +342,25 @@ impl Bbr {
 fn calculate_pacing_rate(&mut self) {
     let bw = self.max_bandwidth.get_estimate();
     
-    // Ha a sávszélesség 0 (fix beállítás miatt), ne számoljunk
     if bw == 0 {
-        // Ha van fix 0 beállítás (már kezeltük az alter_fix_bandwidth-ban)
-        // Ne írjuk felül a pacing_rate-et
         return;
     }
     
     let target_rate = (bw as f64 * self.pacing_gain as f64) as u64;
     
     if self.is_at_full_bandwidth {
-        self.pacing_rate = target_rate.max(1); // Minimum 1 byte/s
+        self.pacing_rate = target_rate.max(1);
         return;
     }
 
-    // Pace: initial_window / RTT, amint van RTT
     if self.pacing_rate == 0 && self.min_rtt.as_nanos() != 0 {
         self.pacing_rate =
             BandwidthEstimation::bw_from_delta(self.init_cwnd, self.min_rtt)
                 .unwrap_or(1)
-                .max(1); // Minimum 1 byte/s
+                .max(1);
         return;
     }
 
-    // Startupban ne csökkentsünk pacinget
     if self.pacing_rate < target_rate {
         self.pacing_rate = target_rate.max(1);
     }
@@ -387,8 +382,6 @@ fn calculate_pacing_rate(&mut self) {
             }
         }
     }
-    
-    // Végső biztosíték: mindig legyen minimum 1 byte/s
     self.pacing_rate = self.pacing_rate.max(1);
 }
 
@@ -509,7 +502,6 @@ impl Controller for Bbr {
                     "bandwidth set to 0 Mbps, setting minimum (1 byte/s)"
                 );
                 
-                // Állítsuk 1 byte/sec-re (minimum érték)
                 self.pacing_rate = 1;
                 
                 self.cwnd = self.min_cwnd;
@@ -700,6 +692,9 @@ fn can_admit_object(
     }
 
     let pacing_bytes_per_sec = self.pacing_rate.max(1);
+    if pacing_bytes_per_sec == 1 {
+        return true;
+    }
     let mss = cfg.default_mss as f64;
     let pps = (pacing_bytes_per_sec as f64 / mss).max(1.0);
 
