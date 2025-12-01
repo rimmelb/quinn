@@ -692,7 +692,7 @@ fn can_admit_object(
     }
 
     let pacing_bytes_per_sec = self.pacing_rate.max(1);
-    if pacing_bytes_per_sec == 1 {
+    if pacing_bytes_per_sec <= 1 {
         return true;
     }
     let mss = cfg.default_mss as f64;
