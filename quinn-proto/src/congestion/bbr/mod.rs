@@ -663,7 +663,7 @@ fn can_admit_object(
     &self,
     object_size: u64,
     object_deadline: u64,
-    _rtt_hint: Duration,
+    rtt_hint: Duration,
     arrival_time: u64,
 ) -> bool {
     let Some(cfg) = self.deadline_config.as_ref().filter(|c| c.enabled) else {
@@ -688,6 +688,16 @@ fn can_admit_object(
     }
 
     let remaining_timeout_ms = object_deadline.saturating_sub(elapsed_ms);
+
+    let use_rtt = if self.min_rtt.as_nanos() != 0 {
+        self.min_rtt
+    } else {
+        rtt_hint
+    };
+
+    if use_rtt.as_nanos() == 0 {
+        return true;
+    }
 
     let pacing_bytes_per_sec = self.pacing_rate.max(1);
     let mss = cfg.default_mss as f64;
